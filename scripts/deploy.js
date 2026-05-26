@@ -4,16 +4,16 @@ async function main() {
   const [deployer] = await hre.ethers.getSigners();
   console.log("Deploying with:", deployer.address);
 
-  // --- USDC: use env override on testnet, deploy mock locally ---
+  // --- Reserve token: real USDC on mainnet (set USDC_ADDRESS), $GOBLIN mock on testnet ---
   let usdcAddr = process.env.USDC_ADDRESS;
   if (!usdcAddr || usdcAddr === "0x0000000000000000000000000000000000000000") {
     const Mock = await hre.ethers.getContractFactory("MockERC20");
-    const usdc = await Mock.deploy("Mock USDC", "USDC", 6);
-    await usdc.waitForDeployment();
-    usdcAddr = await usdc.getAddress();
-    console.log("MockUSDC:", usdcAddr);
+    const goblin = await Mock.deploy("Goblin", "GOBLIN", 6);
+    await goblin.waitForDeployment();
+    usdcAddr = await goblin.getAddress();
+    console.log("$GOBLIN (testnet reserve):", usdcAddr);
   } else {
-    console.log("Using existing USDC:", usdcAddr);
+    console.log("Using existing reserve token:", usdcAddr);
   }
 
   // --- Badge (owner = deployer) ---
@@ -54,13 +54,46 @@ async function main() {
 
   // --- Sanity reads ---
   console.log("\n--- Linkage check ---");
-  console.log("badge.curve():", await badge.curve());
-  console.log("access.badge():", await access.badge());
-  console.log("curve.usdc():", await curve.usdc());
-  console.log("curve.badge():", await curve.badge());
-  console.log("curve.access():", await curve.access());
-  console.log("curve.factory():", await curve.factory());
-  console.log("factory.curve():", await factory.curve());
+  const badgeCurve = await badge.curve();
+  const accessBadge = await access.badge();
+  const curveUsdc = await curve.usdc();
+  const curveBadge = await curve.badge();
+  const curveAccess = await curve.access();
+  const curveFactory = await curve.factory();
+  const factoryCurve = await factory.curve();
+  console.log("badge.curve():", badgeCurve);
+  console.log("access.badge():", accessBadge);
+  console.log("curve.usdc():", curveUsdc);
+  console.log("curve.badge():", curveBadge);
+  console.log("curve.access():", curveAccess);
+  console.log("curve.factory():", curveFactory);
+  console.log("factory.curve():", factoryCurve);
+
+  // --- Verification: assert linkages and solvency invariant ---
+  const eq = (a, b) => a.toLowerCase() === b.toLowerCase();
+  function assert(cond, msg) {
+    if (!cond) {
+      throw new Error("Verification failed: " + msg);
+    }
+  }
+  assert(eq(badgeCurve, curveAddr), `badge.curve() ${badgeCurve} != curve ${curveAddr}`);
+  assert(eq(curveFactory, factoryAddr), `curve.factory() ${curveFactory} != factory ${factoryAddr}`);
+  assert(eq(accessBadge, badgeAddr), `access.badge() ${accessBadge} != badge ${badgeAddr}`);
+  assert(eq(factoryCurve, curveAddr), `factory.curve() ${factoryCurve} != curve ${curveAddr}`);
+  assert(eq(curveBadge, badgeAddr), `curve.badge() ${curveBadge} != badge ${badgeAddr}`);
+  assert(eq(curveAccess, accessAddr), `curve.access() ${curveAccess} != access ${accessAddr}`);
+  assert(eq(curveUsdc, usdcAddr), `curve.usdc() ${curveUsdc} != usdc ${usdcAddr}`);
+  const solvent = await curve.solvencyInvariant();
+  assert(solvent === true, `curve.solvencyInvariant() returned ${solvent}`);
+  console.log("\n✓ Wiring verified");
+
+  console.log("\n--- Deployed addresses ---");
+  console.log("USDC:               ", usdcAddr);
+  console.log("GoblinBadge:        ", badgeAddr);
+  console.log("GoblinAccess:       ", accessAddr);
+  console.log("GoblinCurve:        ", curveAddr);
+  console.log("GoblinTokenFactory: ", factoryAddr);
+  console.log("Deployer/Oracle:    ", deployer.address);
   console.log("\nDeploy complete.");
 }
 

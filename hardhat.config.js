@@ -14,8 +14,6 @@ module.exports = {
     hardhat: {
       chainId: 31337,
     },
-    // TODO: confirm Monad testnet RPC and chainId before mainnet. Values below reflect
-    // public docs as of writing; double-check at https://docs.monad.xyz before deploying.
     monadTestnet: {
       url: process.env.MONAD_RPC_URL || "https://testnet-rpc.monad.xyz",
       chainId: 10143,
