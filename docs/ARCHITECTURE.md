@@ -37,9 +37,21 @@ How the five contracts fit together, in what order they get deployed, and why ea
          │  USDC   │ ◄── transferFrom │ buyers/sells │
          │ (6 dec) │     transfer     └──────────────┘
          └─────────┘
+
+                              │ events
+                              ▼
+                      ┌───────────────┐
+                      │   Indexer     │  ◄── Ponder 0.9
+                      │ (token/trade/ │     :42069 REST + GraphQL
+                      │  user/flag/   │     pglite (dev) / pg (prod)
+                      │  candle)      │
+                      └───────┬───────┘
+                              │
+                              ▼
+                       frontend / bot
 ```
 
-Curve holds all USDC. Badge holds all reputation. Access reads badge. Factory deploys tokens but only when the curve calls it. Tokens are dumb ERC-20s that exist to be traded against the curve.
+Curve holds all USDC. Badge holds all reputation. Access reads badge. Factory deploys tokens but only when the curve calls it. Tokens are dumb ERC-20s that exist to be traded against the curve. Indexer is downstream-only — read path, no writes back on-chain.
 
 ## Wiring order
 
@@ -90,10 +102,16 @@ The only state change to a badge is rank up (monotonic) or the single KING→VET
 
 ## How fees flow
 
+Two streams. Trading fee on every trade, graduation fee one-shot at 69k.
+
+### Trading fee (1% gross, rank-scaled)
+
 ```
    Buyer ──usdcIn──► Curve
                        │
-                       ├── fee  ────► accumulatedFees  (owner-withdrawable)
+                       ├── fee
+                       │     ├── 20% → pendingWithdrawals[creator]   (creator share)
+                       │     └── 80% → accumulatedFees               (protocol)
                        │
                        └── usdcAfterFee
                               ├──► virtualUSDC  (pricing)
@@ -101,19 +119,40 @@ The only state change to a badge is rank up (monotonic) or the single KING→VET
                               └──► totalReserves  (solvency check)
 ```
 
-Fees never count toward graduation. The 69k threshold is 69k of *net* buy-side USDC. This keeps fee policy decoupled from launch economics — owner can sweep fees without shifting graduation.
+`CREATOR_FEE_SHARE_BPS = 2000`. Same split applies to sell fees. Emits `CreatorFeeAccrued(tokenId, creator, amount)` on every credit. Creator pulls via `claim()`.
 
-Sells: gross USDC out is computed by the curve, fee is taken from the proceeds before sending. Sells also bump `lifetimeVolumeUSDC` and the seller's KING-table position.
+### Graduation fee (one-shot, 2%)
 
-`withdrawFees(to)` is owner-only and pulls the full `accumulatedFees` bucket in one shot. Resets to zero, then `transfer()`s.
+Fires inside `_buy` the moment `realUSDCCollected` crosses `GRADUATION_THRESHOLD` (after the H-2 clamp lands it on exactly 69k):
+
+```
+   realUSDCCollected == 69,000
+              │
+              ├── graduationFee = 69,000 * 200 / 10_000 = 1,380
+              │         └──► accumulatedFees
+              │
+              └── realUSDCCollected -= graduationFee
+                  → ends at 67,620
+```
+
+`GRADUATION_FEE_BPS = 200`. Emits `GraduationFeeTaken(tokenId, fee)`. The 67,620 is what's locked in the curve until `releaseAuctionFunds`.
+
+### Why trading fees don't count toward graduation
+
+`accumulatedFees` and `pendingWithdrawals[creator]` are their own storage. Neither counts toward `realUSDCCollected` or `totalReserves`. The 69k threshold is 69k of *net* buy-side USDC, regardless of fee policy. Owner can sweep fees mid-launch without disturbing graduation math.
+
+Sells: gross USDC out is computed by the curve, fee is taken from the proceeds before sending, then split 80/20 protocol/creator. Sells also bump `lifetimeVolumeUSDC` and the seller's KING-table position.
+
+`withdrawFees(to)` is owner-only and pulls the full `accumulatedFees` bucket in one shot. Resets to zero, then `transfer()`s. Doesn't touch `pendingWithdrawals` — those belong to creators / relayers.
 
 ## How graduation works
 
 A token graduates when `realUSDCCollected >= GRADUATION_THRESHOLD` (69,000e6 USDC). After graduation:
 
+- The 2% graduation fee is deducted immediately. `realUSDCCollected` lands at **67,620**, the 1,380 cut moves to `accumulatedFees`.
 - `t.graduated = true`. All `buy()` and `sell()` calls revert with `TokenAlreadyGraduated`.
 - The buyer who tripped graduation gets `bumpGraduationsWitnessed` — one step toward VETERAN.
-- The locked USDC sits in the curve until the owner calls `releaseAuctionFunds(tokenId, relayer, amount)`. One-shot per token.
+- The 67,620 sits in the curve until the owner calls `releaseAuctionFunds(tokenId, relayer, amount)`. One-shot per token.
 
 ### The H-2 boundary clamp
 
@@ -152,3 +191,65 @@ CURSED labels are what unlock the rugs-survived stat on sells.
 VETERAN+ can call `flagForRescore(tokenId)`. Each address counts once per token. At `flagCount >= access.getFlagThreshold()` (5), a `RescoringTriggered` event fires — off-chain oracles are expected to subscribe and re-score.
 
 The on-chain side does nothing automatic. It just emits the signal. Oracles do the actual rescore.
+
+## Event surface
+
+All trade events carry full post-trade state so indexers never need a `readContract` round-trip. `tokenId` is indexed on all three core events; secondary topics where they make sense.
+
+```solidity
+event TokenLaunched(
+    uint256 indexed tokenId,
+    address indexed token,
+    address indexed creator,
+    string  name,
+    string  symbol,
+    string  metadataURI,
+    uint256 launchedAt
+);
+
+event TokenPurchased(
+    uint256 indexed tokenId,
+    address indexed buyer,
+    uint256 usdcIn,
+    uint256 tokensOut,
+    uint256 virtualUSDCAfter,
+    uint256 virtualTokenAfter,
+    uint256 realUSDCCollectedAfter
+);
+
+event TokenSold(
+    uint256 indexed tokenId,
+    address indexed seller,
+    uint256 tokensIn,
+    uint256 usdcOut,
+    uint256 virtualUSDCAfter,
+    uint256 virtualTokenAfter,
+    uint256 realUSDCCollectedAfter
+);
+
+event CreatorFeeAccrued(uint256 indexed tokenId, address indexed creator, uint256 amount);
+event GraduationFeeTaken(uint256 indexed tokenId, uint256 fee);
+event GraduationTriggered(uint256 indexed tokenId, uint256 realUSDCCollected);
+```
+
+## Storage / solvency
+
+```solidity
+uint256 public totalReserves;              // sum of realUSDCCollected across all tokens
+uint256 public accumulatedFees;            // protocol's 80% cut + graduation fees
+uint256 public totalPendingWithdrawals;    // sum of pendingWithdrawals[*] — creators + relayers
+mapping(address => uint256) public pendingWithdrawals;
+```
+
+`totalPendingWithdrawals` tracks the aggregate of all pull-pattern credits (creator fee shares and released auction funds). Updated on every accrual and `claim()`.
+
+Solvency invariant:
+
+```solidity
+function solvencyInvariant() external view returns (bool) {
+    return usdc.balanceOf(address(this))
+        >= totalReserves + accumulatedFees + totalPendingWithdrawals;
+}
+```
+
+If this returns false, someone moved USDC the curve didn't account for. Monitor on every block.

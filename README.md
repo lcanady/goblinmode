@@ -11,9 +11,23 @@ USDC-denominated. Monad-native. No middlemen, no admin keys printing tokens, no
 
 - `contracts/` — Solidity ^0.8.24, hand-rolled `Ownable` + `ReentrancyGuard`, zero external deps
 - `scripts/deploy.js` — single-shot deploy + wiring
-- `test/` — Hardhat + Chai (ethers v6) — **39 passing**
+- `test/` — Hardhat + Chai (ethers v6) — **44 passing**
+- `indexer/` — Ponder 0.9 + pglite/Postgres, REST + GraphQL on `:42069`
 - `frontend/` — Next.js 14 app router (scaffold)
 - `bot/` — X/Twitter event reactor (scaffold)
+
+## Live on Monad testnet
+
+Deployed at commit `c225a56`. Reserve token is `$GOBLIN` (MockERC20) — real USDC isn't on Monad testnet, so we run the curve against our own ERC-20. Mainnet swaps in Circle USDC at `0x534b2f3A21130d7a60830c2Df862319e593943A3`.
+
+| Contract | Address |
+| --- | --- |
+| `$GOBLIN` (reserve) | [`0x60fa5f1794E08E4761De71403033D94069b6F01F`](https://testnet.monadexplorer.com/address/0x60fa5f1794E08E4761De71403033D94069b6F01F) |
+| `GoblinBadge` | [`0x8187c3f4E82E84e2FB6aeA463d63715503DBEe4E`](https://testnet.monadexplorer.com/address/0x8187c3f4E82E84e2FB6aeA463d63715503DBEe4E) |
+| `GoblinAccess` | [`0x40Ed9E1d14Ad7A21dC14f197F24b4541D4d9923C`](https://testnet.monadexplorer.com/address/0x40Ed9E1d14Ad7A21dC14f197F24b4541D4d9923C) |
+| `GoblinCurve` | [`0x868874A8F47E8fa697A3E68460a7eEe8EF003479`](https://testnet.monadexplorer.com/address/0x868874A8F47E8fa697A3E68460a7eEe8EF003479) |
+| `GoblinTokenFactory` | [`0xA53E19128f2C65059c4382dF2523DADFdC8e9e53`](https://testnet.monadexplorer.com/address/0xA53E19128f2C65059c4382dF2523DADFdC8e9e53) |
+| Deployer / initial oracle | [`0xF3C20355E1CB26f39eC927a584749cF05Aa5cDE4`](https://testnet.monadexplorer.com/address/0xF3C20355E1CB26f39eC927a584749cF05Aa5cDE4) |
 
 ## Contracts
 
@@ -34,8 +48,23 @@ Five of them. Each does one thing.
 | `INITIAL_SUPPLY` | 1e9 tokens (18 dec) |
 | `VIRTUAL_USDC_OFFSET` | 1,000 USDC |
 | `GRADUATION_THRESHOLD` | 69,000 USDC |
-| `DEFAULT_FEE_BPS` | 100 (1%) |
+| `DEFAULT_FEE_BPS` | 100 (1%) trading fee |
+| `CREATOR_FEE_SHARE_BPS` | 2000 (20% of every trading fee → creator) |
+| `GRADUATION_FEE_BPS` | 200 (2% one-shot cut at 69k) |
 | `SCORE_COOLDOWN` | 1 hour per token, per oracle write |
+
+## Revenue model
+
+Two fee streams. Both denominated in the reserve token.
+
+| Stream | Rate | Split | When |
+| --- | --- | --- | --- |
+| Trading fee | 1% (rank-scaled down to 0.5% for ANCIENT) | 80% protocol → `accumulatedFees`, 20% creator → `pendingWithdrawals[creator]` | Every buy and every sell |
+| Graduation fee | 2% of the 69k threshold (~1,380 $GOBLIN) | 100% protocol → `accumulatedFees` | One-shot, the moment a token crosses 69k |
+
+Creators pull their cut via the existing `claim()`. Trading fee bps in the [rank ladder](#rank-ladder) below is the **gross** bps — the protocol keeps 80% of those bps, the creator gets the other 20%. Same math, two beneficiaries.
+
+Graduation fee deducts from `realUSDCCollected` after the H-2 boundary clamp lands it on 69k. Net real reserves at graduation: **67,620**. The 1,380 lives in `accumulatedFees`. Emits `GraduationFeeTaken(tokenId, fee)`.
 
 ### Rank ladder
 
@@ -60,7 +89,18 @@ ANCIENT is one seat, set once, forever. Don't ask.
 - **Two-step ownership.** `transferOwnership` then `acceptOwnership`. No fat-fingering keys into the void.
 - **Pull-pattern relayer payouts.** `releaseAuctionFunds` credits, `claim()` withdraws. Blocklisted relayer can't brick the system.
 - **CREATE2 launches.** Address predictable from `(creator, symbol, timestamp)`. Indexers and snipers can subscribe ahead of the tx.
-- **Solvency invariant.** `usdc.balanceOf(curve) >= totalReserves + accumulatedFees` — view function, monitor it.
+- **Solvency invariant.** `usdc.balanceOf(curve) >= totalReserves + accumulatedFees + totalPendingWithdrawals` — view function, monitor it.
+- **Enriched events.** `TokenLaunched`, `TokenPurchased`, `TokenSold` carry full post-trade state (`virtualUSDCAfter`, `virtualTokenAfter`, `realUSDCCollectedAfter`) and indexed `tokenId`. Indexer never needs a post-trade `readContract` call.
+
+## Indexer
+
+Lives in `indexer/`. Ponder 0.9, pglite in dev, Postgres in prod. Pointed at the live testnet contracts above.
+
+- REST: `http://localhost:42069/api/v1`
+- GraphQL: `http://localhost:42069/graphql`
+- Schema: `token`, `trade`, `user`, `flag`, `candle`
+
+See [`docs/DEPLOY.md`](docs/DEPLOY.md#indexer) for env + Railway notes.
 
 ## Setup
 
@@ -102,7 +142,9 @@ Deeper writeups live in `docs/`:
 
 **Works:**
 
-- Full contract suite, compiled and tested (39 tests, all green)
+- Full contract suite, compiled and tested (44 tests, all green)
+- Deployed and wired on Monad testnet (commit `c225a56`)
+- Ponder indexer running against live contracts
 - Bonding curve buy/sell with rank-scaled fees
 - Soulbound badge with all six rank transitions including KING churn + ANCIENT one-shot
 - Multi-oracle scoring with cooldown

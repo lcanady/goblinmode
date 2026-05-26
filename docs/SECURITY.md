@@ -47,7 +47,16 @@ All findings remediated. Source of fix is cited inline.
 | M-2 | Medium | Factory deploy address was unpredictable, hurting sniper-resistance and indexer subscription | `predictAddress(name, symbol, supply, creator, timestamp)` mirrors `deploy()` exactly; same CREATE2 salt + initcode hash |
 | L-1 | Low | Single-step `transferOwnership` risked locking the contract to a wrong address | Two-step transfer: `transferOwnership` sets `pendingOwner`, `acceptOwnership` finalizes from the new owner's wallet |
 
-39 tests cover the curve and badge surface, including the boundary clamp, KING churn, ANCIENT one-shot gating, pull-pattern claims, score cooldown, and rank promotion gates.
+44 tests cover the curve and badge surface, including the boundary clamp, graduation fee, creator fee accrual + claim, KING churn, ANCIENT one-shot gating, pull-pattern claims, score cooldown, and rank promotion gates.
+
+### Post-audit patches (commit `c225a56`)
+
+The above remediations were the audit pass. After that, two revenue patches landed that would want a re-audit before mainnet:
+
+- **Graduation fee** (`GRADUATION_FEE_BPS = 200`). Deducts 2% inside `_buy` the instant `realUSDCCollected` crosses 69k. Touches `accumulatedFees` and `realUSDCCollected` only.
+- **Creator fee share** (`CREATOR_FEE_SHARE_BPS = 2000`). 20% of every trading fee credits `pendingWithdrawals[t.creator]`. Creator pulls via existing `claim()`.
+
+Both patches re-use existing pull-pattern infrastructure. No new external call paths. Storage additions: `totalPendingWithdrawals` (aggregate of all pull credits). Auditor would want to re-verify the solvency invariant under the new fee splits and re-check the H-2 clamp interaction with the graduation fee (the fee deducts *after* the clamp lands on 69k).
 
 ## Known limitations
 
@@ -58,6 +67,12 @@ These are real and accepted trade-offs, not bugs.
 If the recipient of `withdrawFees(to)` is USDC-blocklisted, the call reverts. Owner must pass a non-blocklisted address. The fee bucket isn't bricked — it just can't be swept to that specific `to`. Pick a different address and retry.
 
 We did **not** apply the pull-pattern here because `withdrawFees` is a privileged owner-only sweep, not a user-facing flow. Owner is expected to manage their own non-blocklisted treasury address.
+
+### 1b. USDC blocklist on creator addresses
+
+The 20% creator fee share is pull-pattern (`pendingWithdrawals[creator]` + `claim()`), so a blocklisted creator can't brick trading — fees still accrue, the curve doesn't care, buys and sells keep working. The creator's own balance just becomes unclaimable until they `claim()` from a non-blocklisted address (which they can't — `claim()` sends to `msg.sender`).
+
+Net result: **trading is never bricked by a creator's USDC status**, but a creator who manages to get themselves blocklisted has stranded their fee bag. Footgun, not a system bug.
 
 ### 2. MEV on launch
 
@@ -92,10 +107,10 @@ These should hold for any sequence of valid txs. Worth fuzzing.
 ### I1. Solvency (the big one)
 
 ```
-usdc.balanceOf(curve) >= totalReserves + accumulatedFees
+usdc.balanceOf(curve) >= totalReserves + accumulatedFees + totalPendingWithdrawals
 ```
 
-Exposed as `solvencyInvariant()`. Must hold after every buy, sell, fee withdrawal, and auction release. Should be monitored on-chain.
+Exposed as `solvencyInvariant()`. Must hold after every buy, sell, graduation, fee withdrawal, auction release, creator fee accrual, and `claim()`. `totalPendingWithdrawals` is the aggregate of all unclaimed pull-pattern credits (creator shares + released auction funds). Should be monitored on-chain.
 
 ### I2. Constant-product preservation per token
 
@@ -113,7 +128,7 @@ For any wallet, `uint8(getRank(wallet))` is monotonically non-decreasing over ti
 
 ### I4. Graduation threshold exact
 
-After the H-2 clamp, the buy that graduates a token lands `realUSDCCollected == GRADUATION_THRESHOLD` exactly.
+After the H-2 clamp, the buy that graduates a token lands `realUSDCCollected == GRADUATION_THRESHOLD` exactly **before** the graduation-fee deduction. Post-fee, `realUSDCCollected == GRADUATION_THRESHOLD * (1 - GRADUATION_FEE_BPS/BPS_DENOM) == 67,620`. `accumulatedFees` increased by exactly 1,380 in the same tx.
 
 ### I5. Badge uniqueness
 
@@ -174,7 +189,7 @@ Targeted properties to chase via Echidna's coverage-guided search:
 
 ### Foundry invariant testing alternative
 
-The 39-test Hardhat suite is unit-style. A Foundry invariant suite would be additive — invariant harnesses are easier to write in Solidity than via Ethers v6.
+The 44-test Hardhat suite is unit-style. A Foundry invariant suite would be additive — invariant harnesses are easier to write in Solidity than via Ethers v6.
 
 ### Static analysis
 

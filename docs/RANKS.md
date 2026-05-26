@@ -45,6 +45,8 @@ On the buy that pushes `realUSDCCollected >= GRADUATION_THRESHOLD`. The buyer wh
 
 Fee is taken on both buys and sells. Charged on buys against `usdcIn`. Charged on sells against `usdcGross` (the raw curve output, before sending to seller).
 
+**Heads up:** the bps above is the **gross** fee charged to the trader. Of that fee, the protocol keeps 80% (`accumulatedFees`) and 20% credits the token's creator (`pendingWithdrawals[creator]`, via `CREATOR_FEE_SHARE_BPS = 2000`). Trader pays the full bps either way — see [`BONDING_CURVE.md`](BONDING_CURVE.md#creator-fee-share).
+
 ## Early-access window (from `GoblinAccess.getEarlyAccessSeconds`)
 
 The window is the number of seconds a higher-rank wallet sees a launch before lower-rank wallets can trade it. Enforcement is **off-chain** (frontend / RPC gateway) — the contract just exposes the value. ANCIENT returns `999` as a sentinel for "unlimited"; frontends treat it specially.

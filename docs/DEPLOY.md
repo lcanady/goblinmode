@@ -2,6 +2,23 @@
 
 Full walkthrough for Monad testnet. Everything is immutable after wiring, so this is also the only chance to get it right.
 
+## Live testnet deployment
+
+Deployed at commit `c225a56`. Explorer base: `https://testnet.monadexplorer.com/address/`.
+
+| Contract | Address |
+| --- | --- |
+| `$GOBLIN` (reserve, MockERC20) | `0x60fa5f1794E08E4761De71403033D94069b6F01F` |
+| `GoblinBadge` | `0x8187c3f4E82E84e2FB6aeA463d63715503DBEe4E` |
+| `GoblinAccess` | `0x40Ed9E1d14Ad7A21dC14f197F24b4541D4d9923C` |
+| `GoblinCurve` | `0x868874A8F47E8fa697A3E68460a7eEe8EF003479` |
+| `GoblinTokenFactory` | `0xA53E19128f2C65059c4382dF2523DADFdC8e9e53` |
+| Deployer / initial oracle | `0xF3C20355E1CB26f39eC927a584749cF05Aa5cDE4` |
+
+The deployer EOA was registered as the initial oracle at construction (`curve.isOracle[deployer] = true`). Rotate before mainnet — see [step 4](#4-set-the-oracle-set).
+
+**Reserve token note.** Real USDC isn't on Monad testnet, so we run the curve against our own `$GOBLIN` (MockERC20) as the reserve. Mainnet swaps in Circle USDC at `0x534b2f3A21130d7a60830c2Df862319e593943A3`. All the math is identical — the contract doesn't care which ERC-20 it's pointed at.
+
 ## Pre-flight
 
 ### 1. Verify Monad testnet config
@@ -33,7 +50,7 @@ npx hardhat compile
 npx hardhat test
 ```
 
-39 tests should pass. If anything is red, stop. Don't deploy on red.
+44 tests should pass. If anything is red, stop. Don't deploy on red.
 
 ## The deploy
 
@@ -195,3 +212,34 @@ Neither is built. See `frontend/README.md` and `bot/README.md` for the current s
 - **Wrong oracle:** fixable via `setOracle` / `addOracle` / `removeOracle`. Not destructive.
 - **Wrong owner:** if you haven't called `acceptOwnership` from the wrong address yet, call `transferOwnership` again with the right one. If you have — well, the wrong owner controls the contract. Use the two-step rotation from there to recover.
 - **`solvencyInvariant()` returns false post-deploy:** something is very wrong with the bytecode or USDC address. Stop. Investigate.
+
+## Indexer
+
+Lives in `indexer/`. Ponder 0.9. Schema: `token`, `trade`, `user`, `flag`, `candle`. REST at `/api/v1`, GraphQL at `/graphql`, port `42069`.
+
+### Local
+
+```bash
+cd indexer
+cp .env.example .env
+# fill in PONDER_RPC_URL_10143 + DATABASE_URL (optional, defaults to pglite)
+pnpm install
+pnpm dev
+```
+
+Dev mode uses pglite (no external Postgres needed). Backfill against Alchemy free tier works but is slow — Alchemy caps `eth_getLogs` at ~10-block ranges on free tier. Pay tier or self-hosted node for production-rate backfill.
+
+### Env vars
+
+| Var | Notes |
+| --- | --- |
+| `PONDER_RPC_URL_10143` | Monad testnet RPC. Alchemy/QuickNode/self-hosted. |
+| `DATABASE_URL` | Postgres connection string. Leave unset for pglite (dev). |
+
+### Production (Railway)
+
+Deploy as a standard Node service. Wire `DATABASE_URL` to a managed Postgres. Start command: `pnpm start`. Healthcheck: `GET /health`. The contract addresses are baked into `indexer/ponder.config.ts` and point at the live testnet deploy above — update if you redeploy contracts.
+
+### Why an indexer
+
+All trade events now carry full post-trade state (`virtualUSDCAfter`, `virtualTokenAfter`, `realUSDCCollectedAfter`) with `tokenId` indexed. The indexer never needs a `readContract` round-trip on every trade — just decode the log and write. See [`ARCHITECTURE.md#event-surface`](ARCHITECTURE.md#event-surface) for the full event shapes.

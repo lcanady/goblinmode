@@ -86,6 +86,24 @@ usdcOut = gross - fee
 
 Seller receives `usdcOut`. `fee` goes to `accumulatedFees`. The curve's `virtualUSDC` and `realUSDCCollected` both decrease by `gross` (not by `usdcOut`) — because that's what the curve actually paid out economically; the fee is just routed to the protocol bucket instead of the seller.
 
+### Creator fee share
+
+Every trading fee is split. 20% goes to the token's creator, 80% to the protocol. Constant: `CREATOR_FEE_SHARE_BPS = 2000` (bps of the fee, not of the trade).
+
+```
+fee            = usdcIn * feeBps / BPS_DENOM        // (buy; sells use gross)
+creatorShare   = fee * CREATOR_FEE_SHARE_BPS / BPS_DENOM   // = fee * 20%
+protocolShare  = fee - creatorShare                       // = fee * 80%
+
+pendingWithdrawals[creator] += creatorShare
+accumulatedFees             += protocolShare
+totalPendingWithdrawals     += creatorShare
+```
+
+Creator pulls via the existing `claim()`. Emits `CreatorFeeAccrued(tokenId, creator, amount)` on every credit so indexers can compute creator earnings without scanning storage.
+
+This is the builder-code primitive: launch a token, earn 20% of every buy and sell against it for life. No vesting, no cliff, no rev-share contract — just a pull credit that accrues on every trade.
+
 ### Why fees don't count toward graduation
 
 `accumulatedFees` is its own storage slot. It's not part of `realUSDCCollected` and not part of `totalReserves`. `withdrawFees(to)` sweeps it independently.
@@ -170,15 +188,36 @@ Strictly `>=`:
 
 ```solidity
 if (!t.graduated && t.realUSDCCollected >= GRADUATION_THRESHOLD) {
+    // 2% graduation fee — deducted before sealing the token
+    uint256 graduationFee = (t.realUSDCCollected * GRADUATION_FEE_BPS) / BPS_DENOM;
+    t.realUSDCCollected  -= graduationFee;
+    accumulatedFees      += graduationFee;
+    emit GraduationFeeTaken(tokenId, graduationFee);
+
     t.graduated = true;
     badge.bumpGraduationsWitnessed(buyer);
     emit GraduationTriggered(tokenId, t.realUSDCCollected);
 }
 ```
 
-After the clamp, the only reachable outcome is exact equality. The `>=` is defense-in-depth in case someone refactors the clamp out or a code path bypasses it.
+After the clamp, the only reachable outcome is exact equality at 69,000. The `>=` is defense-in-depth in case someone refactors the clamp out or a code path bypasses it.
 
-Post-graduation: every subsequent `buy()` and `sell()` reverts with `TokenAlreadyGraduated`. The locked `realUSDCCollected` sits in the curve until `releaseAuctionFunds(tokenId, relayer, amount)` is called by the owner (single-shot per token).
+### The 2% graduation fee
+
+`GRADUATION_FEE_BPS = 200`. Triggered exactly once, the moment a token crosses 69k. Math:
+
+```
+realUSDCCollected   = 69,000          (post-clamp, pre-fee)
+graduationFee       = 69,000 * 200 / 10_000  = 1,380
+realUSDCCollected  -= graduationFee   → 67,620
+accumulatedFees    += graduationFee   → +1,380
+```
+
+So the actual locked reserve at graduation is **67,620**, not 69,000. That's what gets shipped to the AMM via `releaseAuctionFunds`. The 1,380 sits in the protocol fee bucket like any other fee.
+
+Why deduct *after* the clamp instead of before? The clamp is solved against the threshold the buyer is targeting. Doing the fee deduction post-clamp means the threshold check (`>= GRADUATION_THRESHOLD`) stays the trigger, and the fee comes out of the now-locked pool. Clean separation between "what triggers graduation" and "what gets locked at graduation."
+
+Post-graduation: every subsequent `buy()` and `sell()` reverts with `TokenAlreadyGraduated`. The locked 67,620 sits in the curve until `releaseAuctionFunds(tokenId, relayer, amount)` is called by the owner (single-shot per token).
 
 ## Rounding direction (summary)
 
@@ -196,14 +235,15 @@ The graduation clamp is the only place the protocol intentionally rounds *agains
 
 ```solidity
 function solvencyInvariant() external view returns (bool) {
-    return usdc.balanceOf(address(this)) >= totalReserves + accumulatedFees;
+    return usdc.balanceOf(address(this))
+        >= totalReserves + accumulatedFees + totalPendingWithdrawals;
 }
 ```
 
-Should hold after every buy, sell, graduation, fee withdrawal, and auction release. Specifically:
+Should hold after every buy, sell, graduation, fee withdrawal, auction release, creator fee accrual, and `claim()`. Specifically:
 
 - `totalReserves` = sum of `realUSDCCollected` across all tokens
-- `accumulatedFees` = unwithdrawn protocol fees
-- Both bump up on buys, down on sells / releases / withdrawals
+- `accumulatedFees` = unwithdrawn protocol fees (trading + graduation)
+- `totalPendingWithdrawals` = unclaimed pull credits (creator fee shares + released auction funds)
 
-If this view returns `false`, something has paid out USDC that the curve didn't account for. Monitor it off-chain on every block.
+All three bump up on buys, down on sells / releases / withdrawals / claims. If this view returns `false`, something has paid out USDC that the curve didn't account for. Monitor it off-chain on every block.
