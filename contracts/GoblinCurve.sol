@@ -29,6 +29,8 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
     uint256 public constant DEFAULT_FEE_BPS = 100;
     uint256 public constant BPS_DENOM = 10_000;
     uint256 public constant TOP10_SIZE = 10;
+    uint256 public constant GRADUATION_FEE_BPS = 200; // 2% protocol cut at graduation
+    uint256 public constant CREATOR_FEE_SHARE_BPS = 2000; // 20% of trading fees to creator
 
     // H-6: USDC volume floors (6-dec) gating rank promotions so spam-trades alone don't promote.
     uint256 public constant TRENCH_VOLUME_FLOOR = 100e6;          // 100 USDC
@@ -75,6 +77,7 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
     uint256 public firstTradeBlock; // gates setAncient
     uint256 public accumulatedFees; // owner-withdrawable USDC fees
     uint256 public totalReserves;   // sum of all per-token realUSDCCollected
+    uint256 public totalPendingWithdrawals; // sum of all pendingWithdrawals credits
 
     uint256 public nextTokenId = 1;
     mapping(uint256 => TokenState) public tokens;
@@ -92,9 +95,11 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
     // ----------------------------------------------------------------
     // Events
     // ----------------------------------------------------------------
-    event TokenLaunched(uint256 indexed tokenId, address indexed token, address indexed creator, string symbol);
-    event TokenPurchased(uint256 indexed tokenId, address indexed buyer, uint256 usdcIn, uint256 tokensOut, uint256 fee);
-    event TokenSold(uint256 indexed tokenId, address indexed seller, uint256 tokensIn, uint256 usdcOut, uint256 fee);
+    event TokenLaunched(uint256 indexed tokenId, address indexed token, address indexed creator, string name, string symbol, string metadataURI, uint256 launchedAt);
+    event TokenPurchased(uint256 indexed tokenId, address indexed buyer, uint256 usdcIn, uint256 tokensOut, uint256 fee, uint256 virtualUSDCAfter, uint256 virtualTokenAfter, uint256 realUSDCCollectedAfter);
+    event TokenSold(uint256 indexed tokenId, address indexed seller, uint256 tokensIn, uint256 usdcOut, uint256 fee, uint256 virtualUSDCAfter, uint256 virtualTokenAfter, uint256 realUSDCCollectedAfter);
+    event GraduationFeeTaken(uint256 indexed tokenId, uint256 fee);
+    event CreatorFeeAccrued(uint256 indexed tokenId, address indexed creator, uint256 amount);
     event GoblinScoreSet(uint256 indexed tokenId, uint256 score, Label label);
     event GraduationTriggered(uint256 indexed tokenId, uint256 realUSDC);
     event RescoringTriggered(uint256 indexed tokenId, uint256 flagCount);
@@ -232,6 +237,7 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
         // claimable, and the relayer address must remain transfer-capable for it to be
         // withdrawn. Other tokens/auctions are unaffected by a single bad relayer.
         pendingWithdrawals[relayer] += amount;
+        totalPendingWithdrawals += amount;
         emit WithdrawalCredited(relayer, amount);
         emit AuctionReleased(tokenId, relayer, amount);
     }
@@ -248,6 +254,7 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
         // (blocklisted recipient), the entire tx reverts and storage rolls back, so the
         // credit remains intact and a non-blocklisted controller can retry.
         pendingWithdrawals[msg.sender] = 0;
+        totalPendingWithdrawals -= amt;
         if (!usdc.transfer(msg.sender, amt)) revert TransferFailed();
         emit WithdrawalClaimed(msg.sender, amt);
     }
@@ -283,7 +290,7 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
         // Ensure creator has a badge so reputation accrues from their own launch onward.
         if (!badge.hasBadge(msg.sender)) badge.mint(msg.sender);
 
-        emit TokenLaunched(tokenId, tokenAddr, msg.sender, symbol);
+        emit TokenLaunched(tokenId, tokenAddr, msg.sender, name, symbol, metadataURI, block.timestamp);
 
         // Optional creator first-buy in same tx — gives creators skin in the game.
         if (initialBuyUSDC > 0) {
@@ -353,7 +360,16 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
         // Pull USDC. Fee accrues to protocol bucket separately so it never counts
         // toward graduation — keeps the threshold honest.
         if (!usdc.transferFrom(buyer, address(this), usdcIn)) revert TransferFailed();
-        accumulatedFees += fee;
+        // Split fee: 20% to creator (pull-pattern), 80% to protocol bucket.
+        uint256 creatorCut = (fee * CREATOR_FEE_SHARE_BPS) / BPS_DENOM;
+        uint256 protocolFee = fee - creatorCut;
+        accumulatedFees += protocolFee;
+        if (creatorCut > 0) {
+            pendingWithdrawals[t.creator] += creatorCut;
+            totalPendingWithdrawals += creatorCut;
+            emit CreatorFeeAccrued(tokenId, t.creator, creatorCut);
+            emit WithdrawalCredited(t.creator, creatorCut);
+        }
 
         // Update reserves and shipping inventory.
         t.virtualUSDC += usdcAfterFee;
@@ -373,14 +389,20 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
         // First-trade gate for setAncient bootstrap; record once.
         if (firstTradeBlock == 0) firstTradeBlock = block.number;
 
-        emit TokenPurchased(tokenId, buyer, usdcIn, tokensOut, fee);
-
         // Graduation check — strictly >= so 69000.0 exactly trips it.
         if (!t.graduated && t.realUSDCCollected >= GRADUATION_THRESHOLD) {
             t.graduated = true;
+            // Take 2% graduation fee: move from per-token reserve to protocol bucket.
+            uint256 graduationFee = (t.realUSDCCollected * GRADUATION_FEE_BPS) / BPS_DENOM;
+            t.realUSDCCollected -= graduationFee;
+            totalReserves -= graduationFee;
+            accumulatedFees += graduationFee;
+            emit GraduationFeeTaken(tokenId, graduationFee);
             badge.bumpGraduationsWitnessed(buyer);
             emit GraduationTriggered(tokenId, t.realUSDCCollected);
         }
+
+        emit TokenPurchased(tokenId, buyer, usdcIn, tokensOut, fee, t.virtualUSDC, t.virtualToken, t.realUSDCCollected);
 
         // Update KING table and rank ladder for the buyer.
         _bumpVolumeAndMaybePromote(buyer, usdcAfterFee);
@@ -413,7 +435,16 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
         t.realUSDCCollected -= usdcGross;
         totalReserves -= usdcGross;
         t.lifetimeVolumeUSDC += usdcGross;
-        accumulatedFees += fee;
+        // Split fee: 20% to creator, 80% to protocol.
+        uint256 creatorCutS = (fee * CREATOR_FEE_SHARE_BPS) / BPS_DENOM;
+        uint256 protocolFeeS = fee - creatorCutS;
+        accumulatedFees += protocolFeeS;
+        if (creatorCutS > 0) {
+            pendingWithdrawals[t.creator] += creatorCutS;
+            totalPendingWithdrawals += creatorCutS;
+            emit CreatorFeeAccrued(tokenId, t.creator, creatorCutS);
+            emit WithdrawalCredited(t.creator, creatorCutS);
+        }
 
         // Mint badge on first trade for the seller too.
         if (!badge.hasBadge(msg.sender)) badge.mint(msg.sender);
@@ -431,7 +462,7 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
 
         if (firstTradeBlock == 0) firstTradeBlock = block.number;
 
-        emit TokenSold(tokenId, msg.sender, tokensIn, usdcOut, fee);
+        emit TokenSold(tokenId, msg.sender, tokensIn, usdcOut, fee, t.virtualUSDC, t.virtualToken, t.realUSDCCollected);
 
         _bumpVolumeAndMaybePromote(msg.sender, usdcGross);
         _checkRankUp(msg.sender);
@@ -525,7 +556,7 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
     /// outstanding protocol fees. Exposed as a view so off-chain monitoring and tests
     /// can assert solvency without paying gas on every interaction.
     function solvencyInvariant() external view returns (bool) {
-        return usdc.balanceOf(address(this)) >= totalReserves + accumulatedFees;
+        return usdc.balanceOf(address(this)) >= totalReserves + accumulatedFees + totalPendingWithdrawals;
     }
 
     // ----------------------------------------------------------------

@@ -118,7 +118,8 @@ describe("GoblinCurve - graduation", function () {
     await f.curve.connect(f.bob).buy(id, USDC(70_000), 0);
     const t = await f.curve.tokens(id);
     expect(t.graduated).to.equal(true);
-    expect(t.realUSDCCollected).to.be.gte(USDC(69_000));
+    // After 2% graduation fee, reserve drops from 69_000 to 67_620.
+    expect(t.realUSDCCollected).to.equal(USDC(67_620));
   });
 
   it("clamps oversized buy to land exactly on threshold (H-2)", async () => {
@@ -128,7 +129,7 @@ describe("GoblinCurve - graduation", function () {
     await f.curve.connect(f.bob).buy(id, USDC(100_000), 0);
     const t = await f.curve.tokens(id);
     expect(t.graduated).to.equal(true);
-    expect(t.realUSDCCollected).to.equal(USDC(69_000));
+    expect(t.realUSDCCollected).to.equal(USDC(67_620));
     const balAfter = await f.usdc.balanceOf(f.bob.address);
     const spent = balBefore - balAfter;
     // Bob should have been charged ~69k + 1% fee, not the full 100k.
@@ -502,6 +503,82 @@ describe("M-2: predictAddress matches deploy", function () {
       "Goblin", "PRED", await f.curve.INITIAL_SUPPLY(), f.alice.address, block.timestamp
     );
     expect(predicted).to.equal(actual);
+  });
+});
+
+describe("Patch 2/3: graduation fee + creator builder codes", function () {
+  it("creator accrues 20% of buy fee in pendingWithdrawals", async () => {
+    const f = await deployAll();
+    const id = await launch(f.curve, f.alice); // alice is creator
+    // Bob buys: fee=1% of 100 = 1 USDC; 20% creator cut = 0.2 USDC.
+    await f.curve.connect(f.bob).buy(id, USDC(100), 0);
+    expect(await f.curve.pendingWithdrawals(f.alice.address)).to.equal(USDC(0.2));
+  });
+
+  it("creator accrues 20% of sell fee in pendingWithdrawals", async () => {
+    const f = await deployAll();
+    const id = await launch(f.curve, f.alice);
+    // First buy so there's something to sell.
+    await f.curve.connect(f.bob).buy(id, USDC(1000), 0);
+    const creditAfterBuy = await f.curve.pendingWithdrawals(f.alice.address);
+    const tokAddr = (await f.curve.tokens(id)).token;
+    const Tok = await ethers.getContractAt("GoblinToken", tokAddr);
+    await Tok.connect(f.bob).approve(await f.curve.getAddress(), ethers.MaxUint256);
+    const bal = await Tok.balanceOf(f.bob.address);
+    const [, fee] = await f.curve.quoteSell(id, bal / 4n, f.bob.address);
+    await f.curve.connect(f.bob).sell(id, bal / 4n, 0);
+    const creditAfterSell = await f.curve.pendingWithdrawals(f.alice.address);
+    // The sell adds exactly fee * 20% on top of whatever was there from the buy.
+    expect(creditAfterSell - creditAfterBuy).to.equal((fee * 2000n) / 10_000n);
+  });
+
+  it("creator can claim() their accrued fees", async () => {
+    const f = await deployAll();
+    const id = await launch(f.curve, f.alice);
+    await f.curve.connect(f.bob).buy(id, USDC(100), 0);
+    const credit = await f.curve.pendingWithdrawals(f.alice.address);
+    expect(credit).to.equal(USDC(0.2));
+    const before = await f.usdc.balanceOf(f.alice.address);
+    await expect(f.curve.connect(f.alice).claim())
+      .to.emit(f.curve, "WithdrawalClaimed").withArgs(f.alice.address, credit);
+    expect(await f.usdc.balanceOf(f.alice.address) - before).to.equal(credit);
+    expect(await f.curve.pendingWithdrawals(f.alice.address)).to.equal(0n);
+  });
+
+  it("graduation deducts 2% from realUSDCCollected and credits accumulatedFees", async () => {
+    const f = await deployAll();
+    const id = await launch(f.curve, f.alice);
+    const feesBefore = await f.curve.accumulatedFees();
+    await f.curve.connect(f.bob).buy(id, USDC(100_000), 0);
+    const t = await f.curve.tokens(id);
+    expect(t.graduated).to.equal(true);
+    expect(t.realUSDCCollected).to.equal(USDC(67_620));
+    const feesAfter = await f.curve.accumulatedFees();
+    // accumulatedFees jumped by at least graduation fee (1_380 USDC).
+    expect(feesAfter - feesBefore).to.be.gte(USDC(1_380));
+  });
+
+  it("solvencyInvariant holds after multi-trade + graduation + claim cycle", async () => {
+    const f = await deployAll();
+    const id = await launch(f.curve, f.alice);
+    // Several buys
+    for (let i = 0; i < 4; i++) await f.curve.connect(f.bob).buy(id, USDC(150), 0);
+    // A sell
+    const tokAddr = (await f.curve.tokens(id)).token;
+    const Tok = await ethers.getContractAt("GoblinToken", tokAddr);
+    await Tok.connect(f.bob).approve(await f.curve.getAddress(), ethers.MaxUint256);
+    const bal = await Tok.balanceOf(f.bob.address);
+    await f.curve.connect(f.bob).sell(id, bal / 8n, 0);
+    expect(await f.curve.solvencyInvariant()).to.equal(true);
+    // Graduate via another buy
+    await f.curve.connect(f.carol).buy(id, USDC(80_000), 0);
+    expect(await f.curve.solvencyInvariant()).to.equal(true);
+    // Creator claim
+    await f.curve.connect(f.alice).claim();
+    expect(await f.curve.solvencyInvariant()).to.equal(true);
+    // Owner fee withdraw
+    await f.curve.connect(f.owner).withdrawFees(f.owner.address);
+    expect(await f.curve.solvencyInvariant()).to.equal(true);
   });
 });
 
