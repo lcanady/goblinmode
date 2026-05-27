@@ -47,7 +47,9 @@ All findings remediated. Source of fix is cited inline.
 | M-2 | Medium | Factory deploy address was unpredictable, hurting sniper-resistance and indexer subscription | `predictAddress(name, symbol, supply, creator, timestamp)` mirrors `deploy()` exactly; same CREATE2 salt + initcode hash |
 | L-1 | Low | Single-step `transferOwnership` risked locking the contract to a wrong address | Two-step transfer: `transferOwnership` sets `pendingOwner`, `acceptOwnership` finalizes from the new owner's wallet |
 
-44 tests cover the curve and badge surface, including the boundary clamp, graduation fee, creator fee accrual + claim, KING churn, ANCIENT one-shot gating, pull-pattern claims, score cooldown, and rank promotion gates.
+75 tests cover the curve, badge, item, quest, and PvP surface — including the boundary clamp, graduation fee, creator fee accrual + claim, KING churn, ANCIENT one-shot gating, pull-pattern claims, score cooldown, rank promotion gates, the full 16-combo PvP defense matrix, commit-reveal happy and sad paths, autoTriggerDrop cooldown, killing-blow demotion (CAVE floor + ANCIENT immunity), and rot-aware curve bumps.
+
+**The PvP/Quest/Item contracts are pre-audit.** All the original audit remediations (C-1 through L-1) apply to the trading core only. The three new contracts and the modifications to `GoblinBadge` (`setPvP`, `demoteRank`), `GoblinAccess` (`canInitiateAttack`), and `GoblinCurve` (`setPvP`, `_rotMultBps`, `_maybeBump`, `_scaledVol`) need their own audit pass before mainnet. See the known-limitations section below for the documented caveats.
 
 ### Post-audit patches (commit `c225a56`)
 
@@ -96,7 +98,40 @@ This is intentional — the oracle's most recent verdict is the source of truth.
 
 `_bumpVolumeAndMaybePromote` linear-scans a 10-element array on every buy and sell. Bounded gas — but every trade pays this cost even when the wallet isn't anywhere near top-10. Acceptable for a 10-element table; would be a problem at top-100.
 
-### 5. Graduated token state is permanent
+### 5. `autoTriggerDrop` weaker randomness (PvP-only path)
+
+`GoblinQuest.autoTriggerDrop` is the single-tx drop path used by `GoblinPvP` on killing blows. It rolls rarity from:
+
+```
+rng = keccak256(block.prevrandao, blockhash(block.number - 1), wallet, dropId)
+```
+
+On a fast-block / low-validator chain like Monad testnet, a validator can influence both `block.prevrandao` and `blockhash(n-1)`. Exploitation cost is non-trivial (you have to be the proposer of the relevant block AND the relevant attack has to be timed against it), but the surface is real.
+
+Mitigations in place:
+
+- Only `isAutoTrigger[msg.sender]` callers can hit this path (PvP exclusively at deploy time)
+- Only fires on `KING_KILL` — the demotion has already landed, the loot is downstream cosmetic
+- Cooldown still enforced
+- PvP wraps the call in `try/catch`, so a bricked Quest can't brick a raid
+
+Player-initiated drops still go through the commit-reveal path with full `seed XOR blockhash(commitBlock)` randomness — that path is robust against validator influence.
+
+### 6. `_maybeBump` same-block randomness determinism
+
+`GoblinCurve._maybeBump` uses:
+
+```
+rng = keccak256(blockhash(n-1), block.timestamp, wallet, kind, badge.tradeCount(wallet)) % BPS_DENOM
+```
+
+Notably **no tx index or call counter** is in the input. Two `_maybeBump` calls with the same `(wallet, kind, tradeCount)` in the same block draw the same `rng`. In practice this can happen when multiple bumps on a rotted wallet across distinct trades in the same block happen to skip — `tradeCount` only increments on the bumps that *land*, so successive skipped bumps see the same `tradeCount` and produce correlated outcomes.
+
+Net effect: a rotted wallet making rapid-fire trades in one block sees correlated skip/land outcomes rather than independent draws. The wallet cannot grind a favourable outcome — the RNG is still anchored to `blockhash(n-1)` which they don't control — but the independence assumption is wrong.
+
+Documented in code. Not exploitable for rank-ladder advancement because rot is reversible next epoch and same-block volume doesn't reach the rank-promotion floors anyway.
+
+### 7. Graduated token state is permanent
 
 Once `t.graduated == true`, no further trades. `releaseAuctionFunds` can release the locked USDC once. If the relayer credit never gets `claim()`'d, the USDC sits in `pendingWithdrawals` forever — no rescue path. Pick relayers carefully.
 

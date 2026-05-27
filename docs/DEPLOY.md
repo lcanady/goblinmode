@@ -13,7 +13,12 @@ Deployed at commit `c225a56`. Explorer base: `https://testnet.monadexplorer.com/
 | `GoblinAccess` | `0x40Ed9E1d14Ad7A21dC14f197F24b4541D4d9923C` |
 | `GoblinCurve` | `0x868874A8F47E8fa697A3E68460a7eEe8EF003479` |
 | `GoblinTokenFactory` | `0xA53E19128f2C65059c4382dF2523DADFdC8e9e53` |
+| `GoblinItem` | _(not deployed — fresh deploy required for Quest/PvP)_ |
+| `GoblinQuest` | _(not deployed)_ |
+| `GoblinPvP` | _(not deployed)_ |
 | Deployer / initial oracle | `0xF3C20355E1CB26f39eC927a584749cF05Aa5cDE4` |
+
+**Heads up: the existing testnet deployment does NOT have PvP wired in.** `GoblinCurve` at `0x868874…` predates the `setPvP` slot — well, the slot exists in the current bytecode, but it was never set on that deploy because Item/Quest/PvP didn't exist yet. To test PvP and Quest, **redeploy the full stack** to a fresh set of addresses. The trading core is fine to keep using on the existing testnet deploy if you only need to exercise launchpad behavior.
 
 The deployer EOA was registered as the initial oracle at construction (`curve.isOracle[deployer] = true`). Rotate before mainnet — see [step 4](#4-set-the-oracle-set).
 
@@ -50,7 +55,7 @@ npx hardhat compile
 npx hardhat test
 ```
 
-44 tests should pass. If anything is red, stop. Don't deploy on red.
+75 tests should pass. If anything is red, stop. Don't deploy on red.
 
 ## The deploy
 
@@ -61,14 +66,27 @@ npx hardhat run scripts/deploy.js --network monadTestnet
 `scripts/deploy.js` runs the full wiring in order:
 
 ```
-1. (optional) Deploy MockUSDC                  ← only if USDC_ADDRESS unset
-2. Deploy GoblinBadge(deployer)                ← owner = deployer
-3. Deploy GoblinAccess(badge)
-4. Deploy GoblinCurve(usdc, badge, access, deployer)
-5. badge.setCurve(curve)                       ← ONE-SHOT, locks binding
-6. Deploy GoblinTokenFactory(curve)
-7. curve.setFactory(factory)                   ← ONE-SHOT, locks binding
+ 1. (optional) Deploy MockUSDC                  ← only if USDC_ADDRESS unset
+ 2. Deploy GoblinBadge(deployer)                ← owner = deployer
+ 3. Deploy GoblinAccess(badge)
+ 4. Deploy GoblinCurve(usdc, badge, access, deployer)
+ 5. badge.setCurve(curve)                       ← ONE-SHOT, locks binding
+ 6. Deploy GoblinTokenFactory(curve)
+ 7. curve.setFactory(factory)                   ← ONE-SHOT, locks binding
+ 8. Deploy GoblinItem(deployer)
+ 9. Deploy GoblinQuest(item, deployer)
+10. Deploy GoblinPvP(badge, item, access, quest, deployer)
+11. item.addMinter(quest)
+12. item.addMinter(pvp)
+13. badge.setPvP(pvp)                           ← ONE-SHOT, locks binding
+14. curve.setPvP(pvp)                           ← ONE-SHOT, locks binding
+15. quest.addOracle(deployer)                   ← bootstrap drop oracle
+16. quest.addAutoTrigger(pvp)                   ← PvP can fire KING_KILL drops
 ```
+
+Steps 13 and 14 are the only one-shot bindings in the PvP overlay. If you wire to the wrong PvP address, **redeploy badge and curve too** — both lock permanently after `setPvP`.
+
+Step 15: the deployer EOA is the bootstrap drop oracle so the script can demo a drop. Rotate to a dedicated oracle key (or multisig) before announcing — `quest.addOracle(newOracle)` + `quest.removeOracle(deployer)`.
 
 The script prints addresses as it goes and dumps a linkage check at the end:
 

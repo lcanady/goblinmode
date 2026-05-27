@@ -14,6 +14,12 @@ interface IERC20Min {
     function balanceOf(address) external view returns (uint256);
 }
 
+interface IPvPRot {
+    /// @notice Returns the SURVIVING fraction of progression in bps for `wallet`
+    /// in the current epoch. 10000 = unaffected, 0 = fully rotted.
+    function getRotMultiplierBps(address wallet) external view returns (uint256);
+}
+
 /// @title GoblinCurve
 /// @notice The bonding-curve heart of goblinmode.fun. Every launched token lives here
 /// against virtual USDC reserves until it crosses the graduation threshold, at which
@@ -68,6 +74,7 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
     GoblinBadge public immutable badge;
     GoblinAccess public immutable access;
     GoblinTokenFactory public factory;
+    IPvPRot public pvp; // optional PvP rot oracle; address(0) until set
 
     address public oracle; // legacy single-oracle pointer (kept for backwards-compat reads)
     mapping(address => bool) public isOracle; // M-1: multi-oracle set
@@ -113,6 +120,8 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
     event OracleRemoved(address indexed oracle);
     event WithdrawalCredited(address indexed account, uint256 amount);
     event WithdrawalClaimed(address indexed account, uint256 amount);
+    event PvPSet(address indexed pvp);
+    event RotApplied(address indexed wallet, uint256 epoch, uint256 rotBps);
 
     // ----------------------------------------------------------------
     // Errors
@@ -138,6 +147,7 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
     error ReleaseAmountExceedsReserve();
     error ScoreCooldownActive();
     error NothingToClaim();
+    error PvPAlreadySet();
 
     // ----------------------------------------------------------------
     // Constructor
@@ -158,6 +168,17 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
     // ----------------------------------------------------------------
     // Admin
     // ----------------------------------------------------------------
+    /// @notice One-shot PvP wiring. After this is set, rank-progression counters and
+    /// lifetime volume credit are scaled by the wallet's surviving rot multiplier for
+    /// the current epoch. Trading economics (USDC, tokens, fees) are NEVER scaled —
+    /// only the reputation-side accumulators.
+    function setPvP(address _pvp) external onlyOwner {
+        if (address(pvp) != address(0)) revert PvPAlreadySet();
+        if (_pvp == address(0)) revert InvalidTokenParams();
+        pvp = IPvPRot(_pvp);
+        emit PvPSet(_pvp);
+    }
+
     function setFactory(address _factory) external onlyOwner {
         // One-time wire so an attacker can't swap factories and inject malicious token code.
         if (address(factory) != address(0)) revert FactoryAlreadySet();
@@ -380,7 +401,7 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
 
         // Mint badge on first trade for the buyer so reputation tracking starts immediately.
         if (!badge.hasBadge(buyer)) badge.mint(buyer);
-        badge.bumpTradeCount(buyer);
+        _maybeBump(buyer, 0); // tradeCount, scaled by PvP rot
         boughtAmount[tokenId][buyer] += tokensOut;
 
         // Ship tokens out from curve inventory to the buyer.
@@ -398,14 +419,15 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
             totalReserves -= graduationFee;
             accumulatedFees += graduationFee;
             emit GraduationFeeTaken(tokenId, graduationFee);
-            badge.bumpGraduationsWitnessed(buyer);
+            _maybeBump(buyer, 1); // graduationsWitnessed, scaled
             emit GraduationTriggered(tokenId, t.realUSDCCollected);
         }
 
         emit TokenPurchased(tokenId, buyer, usdcIn, tokensOut, fee, t.virtualUSDC, t.virtualToken, t.realUSDCCollected);
 
         // Update KING table and rank ladder for the buyer.
-        _bumpVolumeAndMaybePromote(buyer, usdcAfterFee);
+        // lifetime volume credit is scaled by PvP rot — trading economics above are NOT.
+        _bumpVolumeAndMaybePromote(buyer, _scaledVol(buyer, usdcAfterFee));
         _checkRankUp(buyer);
     }
 
@@ -448,12 +470,12 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
 
         // Mint badge on first trade for the seller too.
         if (!badge.hasBadge(msg.sender)) badge.mint(msg.sender);
-        badge.bumpTradeCount(msg.sender);
+        _maybeBump(msg.sender, 0); // tradeCount, scaled
 
         // Rugs-survived heuristic: if the token is currently labelled CURSED and the
         // seller previously bought a position here, count this exit as a rug survived.
         if (t.label == Label.CURSED && boughtAmount[tokenId][msg.sender] > 0) {
-            badge.bumpRugsSurvived(msg.sender);
+            _maybeBump(msg.sender, 2); // rugsSurvived, scaled
             // Clear so a single position only counts once per cursed label cycle.
             boughtAmount[tokenId][msg.sender] = 0;
         }
@@ -464,7 +486,7 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
 
         emit TokenSold(tokenId, msg.sender, tokensIn, usdcOut, fee, t.virtualUSDC, t.virtualToken, t.realUSDCCollected);
 
-        _bumpVolumeAndMaybePromote(msg.sender, usdcGross);
+        _bumpVolumeAndMaybePromote(msg.sender, _scaledVol(msg.sender, usdcGross));
         _checkRankUp(msg.sender);
     }
 
@@ -581,6 +603,62 @@ contract GoblinCurve is Ownable, ReentrancyGuard {
         // dx = vUSDC * dy / (vToken + dy)
         if (tokensIn == 0) return 0;
         return (vUSDC * tokensIn) / (vToken + tokensIn);
+    }
+
+    // ----------------------------------------------------------------
+    // PvP rot helpers
+    // ----------------------------------------------------------------
+
+    /// @notice Read the wallet's surviving progression fraction in bps from PvP.
+    /// Returns BPS_DENOM (10000 = unaffected) when PvP isn't wired or query fails.
+    function _rotMultBps(address wallet) internal view returns (uint256) {
+        if (address(pvp) == address(0)) return BPS_DENOM;
+        try pvp.getRotMultiplierBps(wallet) returns (uint256 m) {
+            return m > BPS_DENOM ? BPS_DENOM : m;
+        } catch {
+            return BPS_DENOM;
+        }
+    }
+
+    /// @notice Bump a count-based stat probabilistically: a fully-rotted wallet has 0
+    /// chance of the bump landing; a fully-clean wallet always bumps. The pseudo-random
+    /// draw uses block-bound entropy plus the wallet — cheap on-chain manipulability is
+    /// acceptable because rot is reversible next epoch and the worst case is one missed
+    /// or one extra count toward the rank threshold.
+    function _maybeBump(address wallet, uint8 kind) internal {
+        uint256 mult = _rotMultBps(wallet);
+        if (mult >= BPS_DENOM) {
+            _doCountBump(wallet, kind);
+            return;
+        }
+        if (mult == 0) {
+            emit RotApplied(wallet, block.timestamp / 3600, BPS_DENOM);
+            return;
+        }
+        uint256 rng = uint256(keccak256(abi.encode(
+            blockhash(block.number - 1),
+            block.timestamp,
+            wallet,
+            kind,
+            badge.tradeCount(wallet)
+        ))) % BPS_DENOM;
+        if (rng < mult) {
+            _doCountBump(wallet, kind);
+        } else {
+            emit RotApplied(wallet, block.timestamp / 3600, BPS_DENOM - mult);
+        }
+    }
+
+    function _doCountBump(address wallet, uint8 kind) internal {
+        if (kind == 0) badge.bumpTradeCount(wallet);
+        else if (kind == 1) badge.bumpGraduationsWitnessed(wallet);
+        else if (kind == 2) badge.bumpRugsSurvived(wallet);
+    }
+
+    function _scaledVol(address wallet, uint256 vol) internal view returns (uint256) {
+        uint256 mult = _rotMultBps(wallet);
+        if (mult >= BPS_DENOM) return vol;
+        return (vol * mult) / BPS_DENOM;
     }
 
     // ----------------------------------------------------------------

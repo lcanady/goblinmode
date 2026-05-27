@@ -11,7 +11,7 @@ USDC-denominated. Monad-native. No middlemen, no admin keys printing tokens, no
 
 - `contracts/` — Solidity ^0.8.24, hand-rolled `Ownable` + `ReentrancyGuard`, zero external deps
 - `scripts/deploy.js` — single-shot deploy + wiring
-- `test/` — Hardhat + Chai (ethers v6) — **44 passing**
+- `test/` — Hardhat + Chai (ethers v6) — **75 passing**
 - `indexer/` — Ponder 0.9 + pglite/Postgres, REST + GraphQL on `:42069`
 - `frontend/` — Next.js 14 app router (scaffold)
 - `bot/` — X/Twitter event reactor (scaffold)
@@ -31,15 +31,18 @@ Deployed at commit `c225a56`. Reserve token is `$GOBLIN` (MockERC20) — real US
 
 ## Contracts
 
-Five of them. Each does one thing.
+Eight of them. Each does one thing.
 
 | Contract | Job |
 | --- | --- |
 | `GoblinToken` | Fixed-supply ERC-20. Minted entirely to the curve at construction. |
 | `GoblinTokenFactory` | CREATE2 deployer. Curve-only. Addresses predictable for snipers and indexers. |
 | `GoblinBadge` | Soulbound ERC-721. One per wallet. Six ranks. Untransferable on purpose. |
-| `GoblinAccess` | Pure read layer. Rank → fee bps, early-access window, flag rights. |
+| `GoblinAccess` | Pure read layer. Rank → fee bps, early-access window, flag rights, attack gate. |
 | `GoblinCurve` | The brain. x\*y=k against virtual USDC reserves. Graduates at 69k. |
+| `GoblinItem` | ERC-1155 loot. 8 ids (2 types × 4 rarities). Weapons attack, armor defends. |
+| `GoblinQuest` | Drop engine. Commit-reveal randomness for normal drops, weaker single-tx path for PvP-driven drops. |
+| `GoblinPvP` | Raids. Burn weapon → rot a target → maybe demote their rank. |
 
 ### Constants
 
@@ -65,6 +68,19 @@ Two fee streams. Both denominated in the reserve token.
 Creators pull their cut via the existing `claim()`. Trading fee bps in the [rank ladder](#rank-ladder) below is the **gross** bps — the protocol keeps 80% of those bps, the creator gets the other 20%. Same math, two beneficiaries.
 
 Graduation fee deducts from `realUSDCCollected` after the H-2 boundary clamp lands it on 69k. Net real reserves at graduation: **67,620**. The 1,380 lives in `accumulatedFees`. Emits `GraduationFeeTaken(tokenId, fee)`.
+
+## Quest + PvP
+
+Loot, drops, and goblin-on-goblin violence. Lives next to the trading core, doesn't touch trade economics.
+
+- **Items** — ERC-1155, 8 ids (Weapon|Armor × Trash|Busted|Cursed|Legendary). Freely tradable, no soulbinding. Burned on use.
+- **Drops** — `GoblinQuest` rolls rarity from per-event-type pools (ANY_TRADE, SURVIVE_RUG, PVP_WIN, KING_KILL, etc.). Oracles call `triggerDrop` then `revealDrop` — commit-reveal randomness using `seed XOR blockhash(commitBlock)`. PvP killing blows use a weaker single-tx path (`block.prevrandao` based) so the loot lands in the same tx as the demotion. Documented caveat — see `SECURITY.md`.
+- **Raids** — `GoblinPvP` lets TRENCH+ wallets burn a Weapon to apply *score rot* to a target for the current epoch (1 hour). Defender has 5 minutes to burn Armor and absorb/reflect. Rot scales rank-progression on the curve for that epoch only — trade USDC/fees/tokens are untouched. Cumulative rot ≥ 100% in one epoch = **killing blow**: target drops one rank (CAVE is the floor, ANCIENT immune), attacker gets a KING_KILL drop.
+
+Full writeups:
+
+- [`docs/ITEMS.md`](docs/ITEMS.md) — id encoding, drop pools, weapon rot table, armor block table, commit-reveal flow
+- [`docs/PVP.md`](docs/PVP.md) — epoch math, 16-combo defense matrix, killing-blow rules, bot event surface
 
 ### Rank ladder
 
@@ -137,12 +153,14 @@ Deeper writeups live in `docs/`:
 - [`docs/RANKS.md`](docs/RANKS.md) — full ladder, perks, KING table churn, ANCIENT semantics
 - [`docs/SECURITY.md`](docs/SECURITY.md) — trust model, audit remediations, invariants, fuzz hooks
 - [`docs/DEPLOY.md`](docs/DEPLOY.md) — Monad testnet walkthrough, post-deploy verification, ownership rotation
+- [`docs/ITEMS.md`](docs/ITEMS.md) — loot system: ERC-1155 ids, drop pools, commit-reveal
+- [`docs/PVP.md`](docs/PVP.md) — raid system: attack flow, defense matrix, killing blows
 
 ## What works / what's left
 
 **Works:**
 
-- Full contract suite, compiled and tested (44 tests, all green)
+- Full contract suite, compiled and tested (75 tests, all green)
 - Deployed and wired on Monad testnet (commit `c225a56`)
 - Ponder indexer running against live contracts
 - Bonding curve buy/sell with rank-scaled fees

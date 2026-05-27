@@ -17,6 +17,7 @@ contract GoblinBadge is Ownable {
 
     // --- Storage ---
     address public curve; // only the curve may mint and rank up
+    address public pvp;   // only the pvp contract may demote rank
     uint256 public nextTokenId = 1;
 
     mapping(address => uint256) public badgeOf;          // wallet => tokenId (0 = none)
@@ -31,13 +32,17 @@ contract GoblinBadge is Ownable {
     // --- Events ---
     event BadgeMinted(address indexed wallet, uint256 indexed tokenId, Rank rank);
     event RankUpgraded(address indexed wallet, uint256 indexed tokenId, Rank from, Rank to);
+    event RankDemoted(address indexed wallet, Rank from, Rank to);
+    event PvPSet(address indexed pvp);
 
     // --- Errors ---
     error Soulbound();
     error OnlyCurve();
+    error OnlyPvP();
     error AlreadyHasBadge();
     error NoBadge();
     error CurveAlreadySet();
+    error PvPAlreadySet();
 
     constructor(address initialOwner) Ownable(initialOwner) {}
 
@@ -53,6 +58,33 @@ contract GoblinBadge is Ownable {
     function setCurve(address _curve) external onlyOwner {
         if (curve != address(0)) revert CurveAlreadySet();
         curve = _curve;
+    }
+
+    /// @notice One-shot PvP binding. Mirrors setCurve. Only the bound PvP contract may
+    /// call demoteRank — keeps rank-down semantics tightly scoped to the raid system.
+    function setPvP(address _pvp) external onlyOwner {
+        if (pvp != address(0)) revert PvPAlreadySet();
+        if (_pvp == address(0)) revert ZeroAddress();
+        pvp = _pvp;
+        emit PvPSet(_pvp);
+    }
+
+    modifier onlyPvP() {
+        if (msg.sender != pvp) revert OnlyPvP();
+        _;
+    }
+
+    /// @notice Demote the wallet's rank by one tier. CAVE is the floor (no-op).
+    /// ANCIENT is protected against demotion entirely.
+    function demoteRank(address wallet) external onlyPvP {
+        uint256 tokenId = badgeOf[wallet];
+        if (tokenId == 0) revert NoBadge();
+        Rank current = rankOf[tokenId];
+        if (current == Rank.CAVE) return;       // floor
+        if (current == Rank.ANCIENT) return;    // immune
+        Rank next = Rank(uint8(current) - 1);
+        rankOf[tokenId] = next;
+        emit RankDemoted(wallet, current, next);
     }
 
     // ----------------------------------------------------------------

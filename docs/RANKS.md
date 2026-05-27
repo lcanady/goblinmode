@@ -10,7 +10,10 @@ Six ranks. Enum order is load-bearing — `uint8(Rank)` is used for comparisons 
 CAVE (0) → TRENCH (1) → CURSED_HUNTER (2) → VETERAN (3) → KING (4) → ANCIENT (5)
 ```
 
-Promotions are monotonic (`rankUp` is a no-op if the new rank isn't strictly higher). The only demotion in the entire system is KING → VETERAN when a wallet falls out of the top-10 volume table.
+Promotions are monotonic (`rankUp` is a no-op if the new rank isn't strictly higher). Two demotion paths exist:
+
+1. **KING → VETERAN** when a wallet falls out of the top-10 volume table (curve-driven, automatic on every trade).
+2. **PvP killing blow** — any rank above CAVE (except ANCIENT) drops one tier when cumulative epoch rot hits 100%. See [PvP demotion](#rank-demotion-via-pvp) below.
 
 ## Promotion paths
 
@@ -101,6 +104,27 @@ Linear scan on a 10-element array is cheaper than a heap on-chain. Bounded gas, 
 ### Demotion
 
 The only way out of KING is being displaced from the table. `badge.demoteFromKing(wallet)` is curve-only and exits cleanly to VETERAN (the wallet keeps its veteran stats — graduation count, rugs, etc.). No other rank can be demoted.
+
+## Rank demotion via PvP
+
+KING → VETERAN (top-10 churn) used to be the only demotion path. PvP adds a second one: **killing blows**.
+
+When a wallet's cumulative score-rot in a single epoch (1 hour) hits 10,000 bps from `GoblinPvP` attacks, the attack that crossed the threshold calls `badge.demoteRank(target)` — drops the target one tier.
+
+| Target rank | Demotion outcome | Killing-blow drop to attacker |
+| --- | --- | --- |
+| CAVE | **No-op (floor).** No demotion, no drop. | — |
+| TRENCH | → CAVE | KING_KILL pool |
+| CURSED_HUNTER | → TRENCH | KING_KILL pool |
+| VETERAN | → CURSED_HUNTER | KING_KILL pool |
+| KING | → VETERAN | KING_KILL pool |
+| ANCIENT | **Immune.** No demotion, no drop. | — |
+
+`badge.demoteRank` is gated `onlyPvP` and bound via the one-shot `setPvP(pvpAddr)`. Nothing else can drop a rank.
+
+Note: a KING demoted to VETERAN by a killing blow keeps their `lifetimeUSDCVolume` (rot scales new bumps, doesn't retroactively shrink past volume). They can re-promote to KING on their next trade if they're still in `top10`. Killing-blow demotion is the smaller hit — losing the volume seat (the only way out historically) is permanent until you out-trade the displacer.
+
+Full mechanics in [`PVP.md`](PVP.md).
 
 ## The ANCIENT seat
 

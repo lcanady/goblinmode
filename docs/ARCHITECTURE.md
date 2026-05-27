@@ -1,6 +1,6 @@
 # Architecture
 
-How the five contracts fit together, in what order they get deployed, and why each design call was made.
+How the eight contracts fit together, in what order they get deployed, and why each design call was made.
 
 ## System graph
 
@@ -53,18 +53,86 @@ How the five contracts fit together, in what order they get deployed, and why ea
 
 Curve holds all USDC. Badge holds all reputation. Access reads badge. Factory deploys tokens but only when the curve calls it. Tokens are dumb ERC-20s that exist to be traded against the curve. Indexer is downstream-only — read path, no writes back on-chain.
 
+## Quest + PvP overlay
+
+The trading core (badge, access, curve, factory, token) is self-contained. The Quest/PvP system bolts on top via three additional contracts and one curve view dependency:
+
+```
+                  ┌────────────────────┐
+                  │     GoblinCurve    │
+                  │  reads pvp.        │
+                  │  getRotMultiplier  │◄──────┐
+                  └─────────┬──────────┘       │
+                            │                  │
+                            │ rankUp /         │ getRotMultiplierBps(wallet)
+                            │ demoteFromKing   │
+                            ▼                  │
+                  ┌────────────────────┐       │
+                  │    GoblinBadge     │       │
+                  │  demoteRank        │◄──────┤
+                  │  (onlyPvP, 1-shot) │       │
+                  └────────────────────┘       │
+                            ▲                  │
+                            │ demoteRank       │
+                            │                  │
+                  ┌─────────┴──────────┐       │
+                  │     GoblinPvP      │───────┘
+                  │  attack/defend/    │
+                  │  resolve           │
+                  └─────┬────────┬─────┘
+                burn   │        │  autoTriggerDrop(KING_KILL)
+                weapon │        ▼
+                /armor │  ┌────────────────────┐
+                       │  │    GoblinQuest     │
+                       │  │  commit-reveal     │
+                       │  │  autoTrigger path  │
+                       │  └─────────┬──────────┘
+                       │            │  mint
+                       │            ▼
+                       │  ┌────────────────────┐
+                       └─►│    GoblinItem      │
+                          │  ERC-1155, 8 ids   │
+                          │  minter allowlist  │
+                          └────────────────────┘
+```
+
+Wiring summary:
+
+- `Item ← Quest` — Quest is a minter on Item
+- `Item ← PvP` — PvP is a minter on Item (burns happen via operator approval from holder)
+- `PvP → Badge.demoteRank` — gated by `setPvP` one-shot on Badge
+- `PvP → Quest.autoTriggerDrop` — gated by `addAutoTrigger(pvp)` on Quest
+- `Curve → PvP.getRotMultiplierBps` — gated by `setPvP` one-shot on Curve; falls back to 100% surviving fraction if PvP isn't wired or call reverts
+
+Trust split inside the overlay:
+
+- **Quest has its own oracle set** — separate from the curve's `isOracle`. Quest oracles trigger and reveal drops. Curve oracles score tokens. Keep them apart so a compromised drop oracle can't whipsaw token labels.
+- **PvP is the only contract that can demote rank** (`badge.demoteRank` is `onlyPvP`). One-shot bound at deploy time.
+- **PvP is the only auto-trigger** authorized on Quest by default. Owner can add more if a future contract needs in-line drops, but currently it's just PvP.
+
+See [`ITEMS.md`](ITEMS.md) and [`PVP.md`](PVP.md) for the full mechanics.
+
 ## Wiring order
 
 There's a circular dependency between curve and badge — badge needs to know which curve can mutate it, and curve needs to know the badge address at construction. We break the cycle with one-shot setters.
 
 ```
-1.  Deploy MockUSDC (local only — testnet/mainnet use env override)
-2.  Deploy GoblinBadge(owner)
-3.  Deploy GoblinAccess(badge)
-4.  Deploy GoblinCurve(usdc, badge, access, owner)
-5.  badge.setCurve(curve)        ← one-shot, locks the binding
-6.  Deploy GoblinTokenFactory(curve)
-7.  curve.setFactory(factory)    ← one-shot, locks the binding
+ 1.  Deploy MockUSDC (local only — testnet/mainnet use env override)
+ 2.  Deploy GoblinBadge(owner)
+ 3.  Deploy GoblinAccess(badge)
+ 4.  Deploy GoblinCurve(usdc, badge, access, owner)
+ 5.  badge.setCurve(curve)        ← one-shot, locks the binding
+ 6.  Deploy GoblinTokenFactory(curve)
+ 7.  curve.setFactory(factory)    ← one-shot, locks the binding
+ 8.  Deploy GoblinItem(owner)
+ 9.  Deploy GoblinQuest(item, owner)
+10.  Deploy GoblinPvP(badge, item, access, quest, owner)
+11.  item.addMinter(quest)
+12.  item.addMinter(pvp)
+13.  badge.setPvP(pvp)            ← one-shot
+14.  curve.setPvP(pvp)            ← one-shot
+15.  quest.addOracle(oracleEOA)
+16.  quest.addAutoTrigger(pvp)
 ```
 
 `scripts/deploy.js` does all seven steps in one run and dumps a linkage check at the end.

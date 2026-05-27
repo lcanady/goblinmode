@@ -52,6 +52,42 @@ async function main() {
   await (await curve.setFactory(factoryAddr)).wait();
   console.log("Curve bound to factory");
 
+  // --- Item (ERC-1155 loot) ---
+  const Item = await hre.ethers.getContractFactory("GoblinItem");
+  const item = await Item.deploy(deployer.address);
+  await item.waitForDeployment();
+  const itemAddr = await item.getAddress();
+  console.log("GoblinItem:", itemAddr);
+
+  // --- Quest (drop engine) ---
+  const Quest = await hre.ethers.getContractFactory("GoblinQuest");
+  const quest = await Quest.deploy(itemAddr, deployer.address);
+  await quest.waitForDeployment();
+  const questAddr = await quest.getAddress();
+  console.log("GoblinQuest:", questAddr);
+
+  // --- PvP (raid system) ---
+  const PvP = await hre.ethers.getContractFactory("GoblinPvP");
+  const pvp = await PvP.deploy(badgeAddr, itemAddr, accessAddr, questAddr, deployer.address);
+  await pvp.waitForDeployment();
+  const pvpAddr = await pvp.getAddress();
+  console.log("GoblinPvP:", pvpAddr);
+
+  // --- Wire item minters ---
+  await (await item.addMinter(questAddr)).wait();
+  await (await item.addMinter(pvpAddr)).wait();
+  console.log("Item minters: Quest, PvP");
+
+  // --- Wire PvP into Badge and Curve (one-shot each) ---
+  await (await badge.setPvP(pvpAddr)).wait();
+  await (await curve.setPvP(pvpAddr)).wait();
+  console.log("PvP bound to badge and curve");
+
+  // --- Register oracle on quest; register PvP as auto-trigger for KING_KILL ---
+  await (await quest.addOracle(deployer.address)).wait();
+  await (await quest.addAutoTrigger(pvpAddr)).wait();
+  console.log("Quest: oracle=deployer, autoTrigger=pvp");
+
   // --- Sanity reads ---
   console.log("\n--- Linkage check ---");
   const badgeCurve = await badge.curve();
@@ -85,6 +121,13 @@ async function main() {
   assert(eq(curveUsdc, usdcAddr), `curve.usdc() ${curveUsdc} != usdc ${usdcAddr}`);
   const solvent = await curve.solvencyInvariant();
   assert(solvent === true, `curve.solvencyInvariant() returned ${solvent}`);
+
+  // New PvP/Quest linkage assertions
+  assert(await item.minters(questAddr), "item.minters(quest) is false");
+  assert(await item.minters(pvpAddr), "item.minters(pvp) is false");
+  assert(eq(await badge.pvp(), pvpAddr), "badge.pvp() mismatch");
+  assert(eq(await curve.pvp(), pvpAddr), "curve.pvp() mismatch");
+  assert(await quest.isAutoTrigger(pvpAddr), "quest.isAutoTrigger(pvp) is false");
   console.log("\n✓ Wiring verified");
 
   console.log("\n--- Deployed addresses ---");
@@ -93,6 +136,9 @@ async function main() {
   console.log("GoblinAccess:       ", accessAddr);
   console.log("GoblinCurve:        ", curveAddr);
   console.log("GoblinTokenFactory: ", factoryAddr);
+  console.log("GoblinItem:         ", itemAddr);
+  console.log("GoblinQuest:        ", questAddr);
+  console.log("GoblinPvP:          ", pvpAddr);
   console.log("Deployer/Oracle:    ", deployer.address);
   console.log("\nDeploy complete.");
 }

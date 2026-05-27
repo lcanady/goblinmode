@@ -49,6 +49,12 @@ contract GoblinAccess {
         return uint8(badge.getRank(wallet)) >= uint8(GoblinBadge.Rank.VETERAN);
     }
 
+    /// @notice TRENCH+ gate for initiating PvP attacks. Wraps the rank check used by
+    /// GoblinPvP so the rule can be tweaked here without touching the raid contract.
+    function canInitiateAttack(address wallet) external view returns (bool) {
+        return uint8(badge.getRank(wallet)) >= uint8(GoblinBadge.Rank.TRENCH);
+    }
+
     function getFlagThreshold() external pure returns (uint256) {
         // Five independent veteran flags trigger a rescoring. Constant for now;
         // making it a function lets us upgrade governance later without ABI churn.
