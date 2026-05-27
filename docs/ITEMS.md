@@ -135,6 +135,31 @@ await item.addMinter(pvp.address);
 
 No other minter. `removeMinter` is harmless — only blocks future mints, doesn't burn existing supply.
 
+## Running a drop live — `scripts/quest.js`
+
+Standalone oracle commit + reveal in one shot. Useful for seeding inventory or testing pool weights against the live deploy.
+
+```bash
+# Default: drops to the deployer wallet, ANY_TRADE pool.
+npx hardhat run scripts/quest.js --network monadTestnet
+
+# Target wallet + event pool.
+WALLET=0xF3C20355E1CB26f39eC927a584749cF05Aa5cDE4 \
+EVENT=KING_KILL \
+  npx hardhat run scripts/quest.js --network monadTestnet
+```
+
+Env vars:
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `WALLET` | deployer | The wallet that receives the dropped item. |
+| `EVENT` | `ANY_TRADE` | One of: `ANY_TRADE`, `SURVIVE_RUG`, `EARLY_BUY`, `PVP_WIN`, `WITNESS_GRADUATION_3`, `KING_KILL`, `SURVIVE_FIVE_RUGS`. |
+
+The script does a real commit, mines a block, then reveals — same flow the oracle bot would use. Real example from the live deploy: KING_KILL pool rolled a Cursed Armor in [`0x9785d110…`](https://testnet.monadexplorer.com/tx/0x9785d1107544c208c34f5b64fb0f2a703ab65d33643288beb754c6235afdb241).
+
+The per-`(wallet, eventType, epoch)` cooldown applies — same wallet + same event in the same hour reverts on `triggerDrop`. Wait an epoch or use a different `WALLET`.
+
 ## Metadata
 
 `uri(id)` returns `${baseURI}${id}.json`. `baseURI` defaults to `ipfs://placeholder/items/` at construction. Owner can call `setBaseURI(newBase)` to pin a final IPFS CID once art is frozen.

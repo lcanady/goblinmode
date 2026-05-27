@@ -3,7 +3,7 @@ import { http } from "viem";
 import { GoblinCurveAbi } from "./abis/GoblinCurveAbi";
 import { GoblinBadgeAbi } from "./abis/GoblinBadgeAbi";
 
-const START_BLOCK = 34_279_900;
+const START_BLOCK = 34_290_000;
 
 export default createConfig({
   networks: {
@@ -17,13 +17,13 @@ export default createConfig({
     GoblinCurve: {
       network: "monadTestnet",
       abi: GoblinCurveAbi,
-      address: "0x868874A8F47E8fa697A3E68460a7eEe8EF003479",
+      address: "0x9f0fAbd89274e701379836329D9c99fCa6C6D75B",
       startBlock: START_BLOCK,
     },
     GoblinBadge: {
       network: "monadTestnet",
       abi: GoblinBadgeAbi,
-      address: "0x8187c3f4E82E84e2FB6aeA463d63715503DBEe4E",
+      address: "0x736A5aaa238d6d279a3c22D4F6018748C23c9887",
       startBlock: START_BLOCK,
     },
   },

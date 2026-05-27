@@ -42,6 +42,16 @@ export const GoblinBadgeAbi = [
   },
   {
     "inputs": [],
+    "name": "OnlyPvP",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "PvPAlreadySet",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "Soulbound",
     "type": "error"
   },
@@ -111,6 +121,44 @@ export const GoblinBadgeAbi = [
       }
     ],
     "name": "OwnershipTransferred",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "pvp",
+        "type": "address"
+      }
+    ],
+    "name": "PvPSet",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "wallet",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "enum GoblinBadge.Rank",
+        "name": "from",
+        "type": "uint8"
+      },
+      {
+        "indexed": false,
+        "internalType": "enum GoblinBadge.Rank",
+        "name": "to",
+        "type": "uint8"
+      }
+    ],
+    "name": "RankDemoted",
     "type": "event"
   },
   {
@@ -268,6 +316,19 @@ export const GoblinBadgeAbi = [
       }
     ],
     "name": "demoteFromKing",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "wallet",
+        "type": "address"
+      }
+    ],
+    "name": "demoteRank",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -463,6 +524,19 @@ export const GoblinBadgeAbi = [
     "type": "function"
   },
   {
+    "inputs": [],
+    "name": "pvp",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [
       {
         "internalType": "uint256",
@@ -596,6 +670,19 @@ export const GoblinBadgeAbi = [
       }
     ],
     "name": "setCurve",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_pvp",
+        "type": "address"
+      }
+    ],
+    "name": "setPvP",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"

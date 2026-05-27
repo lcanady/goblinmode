@@ -18,16 +18,31 @@ USDC-denominated. Monad-native. No middlemen, no admin keys printing tokens, no
 
 ## Live on Monad testnet
 
-Deployed at commit `c225a56`. Reserve token is `$GOBLIN` (MockERC20) — real USDC isn't on Monad testnet, so we run the curve against our own ERC-20. Mainnet swaps in Circle USDC at `0x534b2f3A21130d7a60830c2Df862319e593943A3`.
+Full stack live — curve, badge, items, quest, PvP. Reserve token is `$GOBLIN` (MockERC20) — real USDC isn't on Monad testnet, so we run the curve against our own ERC-20. Mainnet swaps in Circle USDC at `0x534b2f3A21130d7a60830c2Df862319e593943A3`.
 
 | Contract | Address |
 | --- | --- |
-| `$GOBLIN` (reserve) | [`0x60fa5f1794E08E4761De71403033D94069b6F01F`](https://testnet.monadexplorer.com/address/0x60fa5f1794E08E4761De71403033D94069b6F01F) |
-| `GoblinBadge` | [`0x8187c3f4E82E84e2FB6aeA463d63715503DBEe4E`](https://testnet.monadexplorer.com/address/0x8187c3f4E82E84e2FB6aeA463d63715503DBEe4E) |
-| `GoblinAccess` | [`0x40Ed9E1d14Ad7A21dC14f197F24b4541D4d9923C`](https://testnet.monadexplorer.com/address/0x40Ed9E1d14Ad7A21dC14f197F24b4541D4d9923C) |
-| `GoblinCurve` | [`0x868874A8F47E8fa697A3E68460a7eEe8EF003479`](https://testnet.monadexplorer.com/address/0x868874A8F47E8fa697A3E68460a7eEe8EF003479) |
-| `GoblinTokenFactory` | [`0xA53E19128f2C65059c4382dF2523DADFdC8e9e53`](https://testnet.monadexplorer.com/address/0xA53E19128f2C65059c4382dF2523DADFdC8e9e53) |
+| `$GOBLIN` (reserve) | [`0x3EAdAd0Ac866e2dBEfefBe23807509E2bc5fFacA`](https://testnet.monadexplorer.com/address/0x3EAdAd0Ac866e2dBEfefBe23807509E2bc5fFacA) |
+| `GoblinBadge` | [`0x736A5aaa238d6d279a3c22D4F6018748C23c9887`](https://testnet.monadexplorer.com/address/0x736A5aaa238d6d279a3c22D4F6018748C23c9887) |
+| `GoblinAccess` | [`0xE210a128B1fb01EBe7009A8749D92c9d117870bF`](https://testnet.monadexplorer.com/address/0xE210a128B1fb01EBe7009A8749D92c9d117870bF) |
+| `GoblinCurve` | [`0x9f0fAbd89274e701379836329D9c99fCa6C6D75B`](https://testnet.monadexplorer.com/address/0x9f0fAbd89274e701379836329D9c99fCa6C6D75B) |
+| `GoblinTokenFactory` | [`0x5f63ef0e407c17C3Fb1a8C0e682a0a128487f53a`](https://testnet.monadexplorer.com/address/0x5f63ef0e407c17C3Fb1a8C0e682a0a128487f53a) |
+| `GoblinItem` | [`0x7B7DAA5EcC8BD20400D59569234B42373A91251c`](https://testnet.monadexplorer.com/address/0x7B7DAA5EcC8BD20400D59569234B42373A91251c) |
+| `GoblinQuest` | [`0xaF367Acd5C05976751c24381E1DC6dA7f83Cf887`](https://testnet.monadexplorer.com/address/0xaF367Acd5C05976751c24381E1DC6dA7f83Cf887) |
+| `GoblinPvP` | [`0x130f9ea294F1218590d828bEd8b2a97c51CB7493`](https://testnet.monadexplorer.com/address/0x130f9ea294F1218590d828bEd8b2a97c51CB7493) |
 | Deployer / initial oracle | [`0xF3C20355E1CB26f39eC927a584749cF05Aa5cDE4`](https://testnet.monadexplorer.com/address/0xF3C20355E1CB26f39eC927a584749cF05Aa5cDE4) |
+
+Previous testnet deploy (`0x60fa5f17…`, `0x868874A8…`, etc.) is dead. Don't point anything new at it.
+
+### Live attack flow — proof it works end-to-end
+
+Real txs from `scripts/attack-flow.js` against the addresses above:
+
+- **Attack**: [`0x7d5504d7…`](https://testnet.monadexplorer.com/tx/0x7d5504d72937ab237c6bda048b39133dbb5017f328fc5d47ec430a2964ce9e73) — Cursed Weapon (7,500 rot bps) swung at burner target
+- **Defend**: [`0x614e0430…`](https://testnet.monadexplorer.com/tx/0x614e04302344a37d483012740c9aa17fdaca6e81fe6eea50af1e5c07a1d2fb38) — Busted Armor (50% block) absorbed half
+- **Result**: 3,750 effective rot bps landed. Target rank unchanged (CAVE floor, needs cumulative 10,000 bps in one epoch for a killing blow).
+
+Real quest drop tx (KING_KILL pool, oracle commit-reveal): [`0x9785d110…`](https://testnet.monadexplorer.com/tx/0x9785d1107544c208c34f5b64fb0f2a703ab65d33643288beb754c6235afdb241) → Cursed Armor.
 
 ## Contracts
 
@@ -134,6 +149,19 @@ npx hardhat test
 npx hardhat run scripts/deploy.js --network monadTestnet
 ```
 
+## Quick scripts
+
+All live against the testnet addresses above. Run with `npx hardhat run scripts/<file>.js --network monadTestnet`.
+
+| Script | What it does |
+| --- | --- |
+| `deploy.js` | Single-shot deploy + wiring of the entire stack (curve, badge, access, factory, item, quest, pvp). |
+| `launch-token.js` | Launches a token via the factory and (optionally) seeds it with trades. |
+| `graduate.js` | Drives a token across the 69k threshold to test the graduation clamp. |
+| `quest.js` | Standalone quest drop — oracle commits + reveals. Env: `WALLET`, `EVENT` (`ANY_TRADE`, `SURVIVE_RUG`, `EARLY_BUY`, `PVP_WIN`, `WITNESS_GRADUATION_3`, `KING_KILL`, `SURVIVE_FIVE_RUGS`). |
+| `attack-flow.js` | Full live e2e PvP run: funds a burner target, drives attacker to TRENCH, quests weapon + armor, attacks, defends. Restartable — reads on-chain state to skip done steps. |
+| `smoketest.js` | Sanity sweep over the live deployment. |
+
 ## Network
 
 `monadTestnet` is wired in `hardhat.config.js`:
@@ -161,7 +189,8 @@ Deeper writeups live in `docs/`:
 **Works:**
 
 - Full contract suite, compiled and tested (75 tests, all green)
-- Deployed and wired on Monad testnet (commit `c225a56`)
+- Deployed and wired on Monad testnet — full stack including PvP/Quest/Item
+- Live PvP attack flow landed end-to-end on testnet ([attack](https://testnet.monadexplorer.com/tx/0x7d5504d72937ab237c6bda048b39133dbb5017f328fc5d47ec430a2964ce9e73) + [defend](https://testnet.monadexplorer.com/tx/0x614e04302344a37d483012740c9aa17fdaca6e81fe6eea50af1e5c07a1d2fb38))
 - Ponder indexer running against live contracts
 - Bonding curve buy/sell with rank-scaled fees
 - Soulbound badge with all six rank transitions including KING churn + ANCIENT one-shot

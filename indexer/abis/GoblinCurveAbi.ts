@@ -102,6 +102,11 @@ export const GoblinCurveAbi = [
   },
   {
     "inputs": [],
+    "name": "PvPAlreadySet",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "Reentrancy",
     "type": "error"
   },
@@ -390,6 +395,19 @@ export const GoblinCurveAbi = [
     "inputs": [
       {
         "indexed": true,
+        "internalType": "address",
+        "name": "pvp",
+        "type": "address"
+      }
+    ],
+    "name": "PvPSet",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
         "internalType": "uint256",
         "name": "tokenId",
         "type": "uint256"
@@ -402,6 +420,31 @@ export const GoblinCurveAbi = [
       }
     ],
     "name": "RescoringTriggered",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "wallet",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "epoch",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "rotBps",
+        "type": "uint256"
+      }
+    ],
+    "name": "RotApplied",
     "type": "event"
   },
   {
@@ -1201,6 +1244,19 @@ export const GoblinCurveAbi = [
     "type": "function"
   },
   {
+    "inputs": [],
+    "name": "pvp",
+    "outputs": [
+      {
+        "internalType": "contract IPvPRot",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [
       {
         "internalType": "uint256",
@@ -1386,6 +1442,19 @@ export const GoblinCurveAbi = [
       }
     ],
     "name": "setOracle",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_pvp",
+        "type": "address"
+      }
+    ],
+    "name": "setPvP",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"

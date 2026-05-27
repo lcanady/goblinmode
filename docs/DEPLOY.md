@@ -4,21 +4,21 @@ Full walkthrough for Monad testnet. Everything is immutable after wiring, so thi
 
 ## Live testnet deployment
 
-Deployed at commit `c225a56`. Explorer base: `https://testnet.monadexplorer.com/address/`.
+Full stack deployed — curve, badge, access, factory, item, quest, pvp all live and wired. Explorer base: `https://testnet.monadexplorer.com/address/`.
 
 | Contract | Address |
 | --- | --- |
-| `$GOBLIN` (reserve, MockERC20) | `0x60fa5f1794E08E4761De71403033D94069b6F01F` |
-| `GoblinBadge` | `0x8187c3f4E82E84e2FB6aeA463d63715503DBEe4E` |
-| `GoblinAccess` | `0x40Ed9E1d14Ad7A21dC14f197F24b4541D4d9923C` |
-| `GoblinCurve` | `0x868874A8F47E8fa697A3E68460a7eEe8EF003479` |
-| `GoblinTokenFactory` | `0xA53E19128f2C65059c4382dF2523DADFdC8e9e53` |
-| `GoblinItem` | _(not deployed — fresh deploy required for Quest/PvP)_ |
-| `GoblinQuest` | _(not deployed)_ |
-| `GoblinPvP` | _(not deployed)_ |
+| `$GOBLIN` (reserve, MockERC20) | `0x3EAdAd0Ac866e2dBEfefBe23807509E2bc5fFacA` |
+| `GoblinBadge` | `0x736A5aaa238d6d279a3c22D4F6018748C23c9887` |
+| `GoblinAccess` | `0xE210a128B1fb01EBe7009A8749D92c9d117870bF` |
+| `GoblinCurve` | `0x9f0fAbd89274e701379836329D9c99fCa6C6D75B` |
+| `GoblinTokenFactory` | `0x5f63ef0e407c17C3Fb1a8C0e682a0a128487f53a` |
+| `GoblinItem` | `0x7B7DAA5EcC8BD20400D59569234B42373A91251c` |
+| `GoblinQuest` | `0xaF367Acd5C05976751c24381E1DC6dA7f83Cf887` |
+| `GoblinPvP` | `0x130f9ea294F1218590d828bEd8b2a97c51CB7493` |
 | Deployer / initial oracle | `0xF3C20355E1CB26f39eC927a584749cF05Aa5cDE4` |
 
-**Heads up: the existing testnet deployment does NOT have PvP wired in.** `GoblinCurve` at `0x868874…` predates the `setPvP` slot — well, the slot exists in the current bytecode, but it was never set on that deploy because Item/Quest/PvP didn't exist yet. To test PvP and Quest, **redeploy the full stack** to a fresh set of addresses. The trading core is fine to keep using on the existing testnet deploy if you only need to exercise launchpad behavior.
+**The previous testnet deployment is dead.** The old addresses (`0x60fa5f17…`, `0x868874A8…`, `0x8187c3f4…`, `0x40Ed9E1d…`, `0xA53E1912…`) predated the PvP overlay and have been superseded by the table above. Don't point new tooling at them.
 
 The deployer EOA was registered as the initial oracle at construction (`curve.isOracle[deployer] = true`). Rotate before mainnet — see [step 4](#4-set-the-oracle-set).
 
@@ -102,6 +102,25 @@ factory.curve(): 0x...
 ```
 
 Every line should be a non-zero address matching the deployed contract. Save the output.
+
+## Live exercise scripts
+
+Once the stack is wired, two scripts will drive real txs end-to-end against it:
+
+```bash
+# Standalone quest drop — oracle commit + reveal in one shot.
+# WALLET defaults to the deployer. EVENT picks the drop pool.
+WALLET=0xF3C20355E1CB26f39eC927a584749cF05Aa5cDE4 \
+EVENT=KING_KILL \
+  npx hardhat run scripts/quest.js --network monadTestnet
+
+# Full PvP attack flow — burner target gen + fund, drive attacker to TRENCH,
+# quest weapon + armor (retries on the 50/50 type roll), attack, defend.
+# Restartable — reads on-chain state and skips already-done steps.
+npx hardhat run scripts/attack-flow.js --network monadTestnet
+```
+
+`scripts/attack-flow.js` has the fresh-deploy addresses hardcoded at the top — if you redeploy, update them.
 
 ## Post-deploy verification
 

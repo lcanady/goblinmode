@@ -181,6 +181,45 @@ Practical impact: a rotted wallet making multiple trades in one block sees corre
 
 You either have armor in inventory or you eat the rot. No "shield generator" item, no pre-emptive cast. Plan ahead.
 
+## Running it live — `scripts/attack-flow.js`
+
+The full attack loop in one command:
+
+```bash
+npx hardhat run scripts/attack-flow.js --network monadTestnet
+```
+
+The script:
+
+1. Generates a fresh burner wallet to be the target, funds it with MON for gas.
+2. Drives the attacker (deployer) past TRENCH if they aren't already there.
+3. Quests a weapon + armor for the attacker via the oracle commit-reveal path. The 50/50 weapon-vs-armor roll inside any pool means the script retries the drop until it has both.
+4. Calls `pvp.attack(target, weaponId)`.
+5. Calls `pvp.defend(armorId)` from the target.
+
+Restartable. It reads on-chain state before each step and skips anything already done — so if the second drop reverted or you ran out of gas mid-flow, just run it again.
+
+Hardcoded fresh-deploy addresses live at the top of the file. If you redeploy the stack, update them or the script targets the wrong contracts.
+
+## Live demo
+
+Real txs from the script against the live testnet deploy:
+
+| Step | Tx | Notes |
+| --- | --- | --- |
+| Attack | [`0x7d5504d7…`](https://testnet.monadexplorer.com/tx/0x7d5504d72937ab237c6bda048b39133dbb5017f328fc5d47ec430a2964ce9e73) | Cursed Weapon burned. `originalRot = 7500` bps. |
+| Defend | [`0x614e0430…`](https://testnet.monadexplorer.com/tx/0x614e04302344a37d483012740c9aa17fdaca6e81fe6eea50af1e5c07a1d2fb38) | Busted Armor burned. `blockBps = 5000`, `reflectBps = 0`. |
+
+Effective rot math:
+
+```
+effectiveRot = 7500 * (10000 - 5000) / 10000 = 3750 bps
+```
+
+3,750 bps landed on the target this epoch. Target rank was CAVE — the rank floor — so no demotion (10,000 bps cumulative would have been required for a killing blow, and CAVE can't drop further anyway).
+
+End-to-end on real chain: quest commit-reveal → ERC-1155 mint → operator approval → attack → defend → rot accumulator updated. The whole loop works.
+
 ## Test surface
 
 `test/PvPQuest.test.js` covers:
